@@ -1,0 +1,307 @@
+# ============================================================================
+# Chess AI AlphaZero - Comprehensive .gitignore
+# ============================================================================
+# Organized by category for easy maintenance and clarity
+
+# ============================================================================
+# PYTHON
+# ============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# PEP 582
+__pypackages__/
+
+
+# ============================================================================
+# VIRTUAL ENVIRONMENTS
+# ============================================================================
+
+chess_env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.env
+.envrc
+
+# Conda environment files (but keep environment.yml)
+Miniconda3-latest-Linux-x86_64.sh
+conda-env.yaml
+
+# ============================================================================
+# PACKAGE MANAGERS
+# ============================================================================
+
+# Poetry
+#poetry.lock
+#poetry.toml
+
+# pipenv
+#Pipfile.lock
+
+# pdm
+#pdm.lock
+.pdm-python
+.pdm-build/
+
+# UV
+#uv.lock
+
+# ============================================================================
+# IDE & EDITORS
+# ============================================================================
+
+# VSCode
+.vscode/
+*.code-workspace
+.history/
+
+# PyCharm / JetBrains
+.idea/
+*.iml
+*.iws
+*.ipr
+.project
+.pydevproject
+.settings/
+
+# Vim
+*.swp
+*.swo
+*~
+.vim/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Cursor
+.cursorignore
+.cursorindexingignore
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# ============================================================================
+# TESTING & COVERAGE
+# ============================================================================
+
+# pytest
+.pytest_cache/
+.nox/
+.tox/
+htmlcov/
+cover/
+
+# Coverage reports
+.coverage
+.coverage.*
+.cache
+*.cover
+*.py.cover
+.hypothesis/
+nosetests.xml
+coverage.xml
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# Ruff
+.ruff_cache/
+
+# ============================================================================
+# LOGGING & DEBUGGING
+# ============================================================================
+
+# Logs
+*.log
+*.pot
+logs/
+*.pyc
+
+# Django logs
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# IPython
+.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# ============================================================================
+# DATA & MODELS (Project-Specific)
+# ============================================================================
+
+# Training data and models
+data/lichess_raw/
+data/training_data/
+data/played_games/
+*.bin
+*.zst
+*.pgn.gz
+
+# Model checkpoints and weights
+model/checkpoints/
+*.pth
+*.pt
+best_chess_model.pth
+chess_model_final.pth
+
+# Large datasets
+lichess_data/
+datasets/
+*.tar
+*.tar.gz
+*.zip
+
+# ============================================================================
+# OPERATING SYSTEM
+# ============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.directory
+
+# ============================================================================
+# BUILD & OUTPUT
+# ============================================================================
+
+# Build outputs
+dist/
+*.egg-info/
+target/
+outputs/
+
+# Documentation
+docs/_build/
+site/
+
+# Jupyter Notebooks (but track source .ipynb if needed)
+.ipynb_checkpoints/
+*checkpoint.ipynb
+
+# ============================================================================
+# MISCELLANEOUS PROJECT FILES
+# ============================================================================
+
+# Temporary test files
+*.tmp
+*.temp
+*.bak
+
+# Old versions of code
+*.old
+*.backup
+
+# Generated experiment files
+experiments/*/
+runs/
+
+# GPU/CUDA cache
+cuda_cache/
+
+# Jupyter kernel specs
+jupyter_data/
+
+# ============================================================================
+# SPECIFIC TO THIS PROJECT (Chess AI)
+# ============================================================================
+
+# Deprecated scripts
+create_dataset_parallel.py
+create_dataset_flexible.py
+create_dataset_batched.py
+create_dataset_optimized.py
+
+# Generated analysis outputs
+analysis_results/
+game_logs/
+eval_results/
+
+# Frontend build files (if using webpack/bundler)
+frontend/dist/
+frontend/node_modules/
+
+# API tokens and secrets
+api-tokens.txt
+.api_key
+secrets/
+
+# ============================================================================
+# NEGATIONS - Files/Folders TO TRACK
+# ============================================================================
+# Use these if you want to track files normally ignored above
+
+# Track important config files
+!config/.gitkeep
+!config/settings.py
+
+# Track empty directories
+!data/.gitkeep
+!data/lichess_raw/.gitkeep
+!data/training_data/.gitkeep
+!data/played_games/.gitkeep
+!model/checkpoints/.gitkeep
+!logs/.gitkeep
+!evaluation/.gitkeep
+
+# Track important documentation
+!README.md
+!requirements.txt
+!setup.py
+
+commands.txt
+token.txt
+build/
+Presentation/
+FINAL/chess_ai/game_engine/mcts_engine_cpp.cpython-311-x86_64-linux-gnu.so
