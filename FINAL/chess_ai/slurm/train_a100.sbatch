@@ -99,15 +99,28 @@ print(f"torch {torch.__version__} | GPU: {torch.cuda.get_device_name(0)} "
 PYCHECK
 
 # =============================================================================
-# STOCKFISH
+# STOCKFISH  — use module if available, else download pre-built binary once
+# Binary cached in bin/stockfish; survives requeueing via shared filesystem.
 # =============================================================================
+STOCKFISH_BIN="$CHESS_AI_DIR/bin/stockfish"
+
 if module load stockfish 2>/dev/null && command -v stockfish &>/dev/null; then
     export STOCKFISH_PATH="$(which stockfish)"
 elif command -v stockfish &>/dev/null; then
     export STOCKFISH_PATH="$(which stockfish)"
+elif [[ -x "$STOCKFISH_BIN" ]]; then
+    export STOCKFISH_PATH="$STOCKFISH_BIN"
+    echo "Stockfish (cached): $STOCKFISH_PATH"
 else
-    echo "WARNING: stockfish not found — evaluation phase will be skipped"
-    export STOCKFISH_PATH="/usr/games/stockfish"
+    echo "Downloading Stockfish 17 (Linux x86-64 AVX2)..."
+    mkdir -p "$CHESS_AI_DIR/bin"
+    SF_URL="https://github.com/official-stockfish/Stockfish/releases/download/sf_17/stockfish-ubuntu-x86-64-avx2.tar"
+    wget -q "$SF_URL" -O /tmp/stockfish.tar
+    tar xf /tmp/stockfish.tar -C /tmp/
+    cp /tmp/stockfish/stockfish-ubuntu-x86-64-avx2 "$STOCKFISH_BIN"
+    chmod +x "$STOCKFISH_BIN"
+    export STOCKFISH_PATH="$STOCKFISH_BIN"
+    echo "Stockfish installed: $STOCKFISH_PATH ($(${STOCKFISH_PATH} --version 2>&1 | head -1))"
 fi
 echo "Stockfish: $STOCKFISH_PATH"
 
