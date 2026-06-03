@@ -1,7 +1,5 @@
 import subprocess
 import os
-import re
-import sys
 
 
 class BayesEloRunner:
@@ -26,12 +24,14 @@ class BayesEloRunner:
         self.stockfish_elo = stockfish_elo  # Baseline for anchoring
         
         if not os.path.exists(self.bayeselo_path):
-            raise FileNotFoundError(
-                f"BayesElo not found at {self.bayeselo_path}\n"
-                f"Expected structure: {project_root}/BayesElo/bayeselo\n"
+            print(
+                f"[Warning] BayesElo not found at {self.bayeselo_path}. "
+                f"Expected structure: {project_root}/BayesElo/bayeselo. "
+                f"BayesElo rating will be skipped. "
                 f"Download: https://www.remi-coulom.fr/Bayesian-Elo/"
             )
-        
+            self.bayeselo_path = None
+
         self.output_dir = os.path.join(project_root, "game_engine", "evaluation", "metrics")
         os.makedirs(self.output_dir, exist_ok=True)
     
@@ -59,6 +59,10 @@ class BayesEloRunner:
             or None if failed
         """
         
+        if self.bayeselo_path is None:
+            print("[Warning] BayesElo binary unavailable, skipping rating computation.")
+            return None
+
         if not os.path.exists(pgn_filepath):
             print(f"❌ PGN file not found: {pgn_filepath}")
             return None

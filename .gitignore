@@ -149,10 +149,10 @@ dmypy.json
 # LOGGING & DEBUGGING
 # ============================================================================
 
-# Logs
+# Logs — track the logs/ directory but not its contents
 *.log
 *.pot
-logs/
+logs/*.pid
 *.pyc
 
 # Django logs

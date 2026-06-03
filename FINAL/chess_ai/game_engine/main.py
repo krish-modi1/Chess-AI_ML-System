@@ -7,9 +7,9 @@ import shutil
 import gc
 import collections
 import torch
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
 import numpy as np
-import math
-import chess 
 import signal
 import sys
 import json

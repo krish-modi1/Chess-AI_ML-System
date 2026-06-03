@@ -6,6 +6,13 @@
 2. Click the download button
 3. Place the downloaded model file in `game_engine/model/best_model.pth`
 
+Or via CLI:
+```bash
+gdown 1FHQQI9hNmIxAZd6zmX6QO8oow5ekjgGs -O game_engine/model/best_model.pth
+```
+
+> Model: 120-channel AlphaZero-style ResNet (256ch, 20 blocks). Trained with MCTS self-play.
+
 ## 2. Environment Setup
 
 ```bash

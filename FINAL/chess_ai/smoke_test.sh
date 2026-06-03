@@ -105,8 +105,7 @@ file_check "game_engine/src/mcts_engine.h"
 file_check "game_engine/src/python_bridge.cpp"
 file_check "game_engine/model/best_model.pth"
 file_check "game_engine/model/metrics.json"
-file_check "slurm/train_a100.sbatch"
-file_check "slurm/train_v100.sbatch"
+file_check "run_gcp.sh"
 
 # C++ extension (.so for running Python version)
 PY_TAG=$("$PYTHON" -c "import sys; print(f'cpython-{sys.version_info.major}{sys.version_info.minor}')")
@@ -906,45 +905,31 @@ src_check "chess_env.py: 120 planes defined"              "game_engine/chess_env
 src_check "cnn.py: input_channels = 120" "game_engine/cnn.py" 'input_channels = 120'
 
 # =============================================================================
-# 14. SLURM SCRIPTS
+# 14. GCP LAUNCH SCRIPT
 # =============================================================================
-header "14. SLURM Scripts"
+header "14. GCP Launch Script"
 
-slurm_check() {
+gcp_check() {
     local description="$1"
-    local file="$2"
-    local pattern="$3"
-    if grep -qe "$pattern" "$CHESS_AI_DIR/$file"; then
+    local pattern="$2"
+    if grep -qe "$pattern" "$CHESS_AI_DIR/run_gcp.sh"; then
         ok "$description"
     else
-        fail "$description" "pattern '$pattern' not found in $file"
+        fail "$description" "pattern '$pattern' not found in run_gcp.sh"
     fi
 }
 
-# CARC-specific: GPU is selected via --gres=gpu:1 + --constraint, NOT --gres=gpu:a100:1
-slurm_check "a100: gres=gpu:1 (CARC syntax)"     "slurm/train_a100.sbatch" 'gres=gpu:1'
-slurm_check "a100: constraint targets a100/a40"  "slurm/train_a100.sbatch" 'constraint.*a100'
-slurm_check "a100: --account= filled in"         "slurm/train_a100.sbatch" '--account=saifhash_1190'
-slurm_check "a100: CARC module ver/2506"         "slurm/train_a100.sbatch" 'module load ver/2506'
-slurm_check "a100: CARC cuda module"             "slurm/train_a100.sbatch" 'module load cuda'
-slurm_check "a100: requests 32 CPUs"             "slurm/train_a100.sbatch" 'cpus-per-task=32'
-slurm_check "a100: CUDA_BATCH_SIZE=8192"         "slurm/train_a100.sbatch" 'CUDA_BATCH_SIZE=8192'
-slurm_check "a100: NUM_WORKERS set from CPUs"    "slurm/train_a100.sbatch" 'NUM_WORKERS='
-slurm_check "a100: conda activate"               "slurm/train_a100.sbatch" 'conda activate'
-slurm_check "a100: cmake build step"             "slurm/train_a100.sbatch" 'cmake'
-slurm_check "a100: make -j build"                "slurm/train_a100.sbatch" 'make -j'
-slurm_check "a100: copies .so to game_engine"    "slurm/train_a100.sbatch" 'cp mcts_engine_cpp'
-slurm_check "a100: runs game_engine/main.py"     "slurm/train_a100.sbatch" 'game_engine/main.py'
-slurm_check "a100: --requeue for preemption"     "slurm/train_a100.sbatch" 'requeue'
-slurm_check "a100: stderr tee to slurm/"         "slurm/train_a100.sbatch" 'tee.*slurm/stderr'
-
-slurm_check "v100: gres=gpu:1 (CARC syntax)"     "slurm/train_v100.sbatch" 'gres=gpu:1'
-slurm_check "v100: constraint targets v100"      "slurm/train_v100.sbatch" 'constraint.*v100'
-slurm_check "v100: --account= filled in"         "slurm/train_v100.sbatch" '--account=saifhash_1190'
-slurm_check "v100: CARC module ver/2506"         "slurm/train_v100.sbatch" 'module load ver/2506'
-slurm_check "v100: CUDA_BATCH_SIZE=4096"         "slurm/train_v100.sbatch" 'CUDA_BATCH_SIZE=4096'
-slurm_check "v100: runs game_engine/main.py"     "slurm/train_v100.sbatch" 'game_engine/main.py'
-slurm_check "v100: --requeue for preemption"     "slurm/train_v100.sbatch" 'requeue'
+gcp_check "run_gcp.sh: GPU VRAM detection"       'VRAM_GB'
+gcp_check "run_gcp.sh: installs stockfish"        'MISSING_PKGS.*stockfish\|stockfish.*MISSING_PKGS'
+gcp_check "run_gcp.sh: STOCKFISH_PATH auto-detect" 'which stockfish'
+gcp_check "run_gcp.sh: cmake build step"          'cmake'
+gcp_check "run_gcp.sh: make -j build"             'make -j'
+gcp_check "run_gcp.sh: copies .so to game_engine" 'cp mcts_engine_cpp'
+gcp_check "run_gcp.sh: auto-tunes CUDA_BATCH_SIZE" 'CUDA_BATCH_SIZE='
+gcp_check "run_gcp.sh: NUM_WORKERS from nproc"   'NUM_WORKERS'
+gcp_check "run_gcp.sh: runs game_engine/main.py"  'game_engine/main.py'
+gcp_check "run_gcp.sh: background mode flag"      '\-\-background'
+gcp_check "run_gcp.sh: logs to logs/training.log" 'logs/training.log'
 
 # =============================================================================
 # SUMMARY
