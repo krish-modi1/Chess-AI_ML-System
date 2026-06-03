@@ -19,8 +19,8 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="v100"             # target V100 (16 GB)
-#SBATCH --output=chess-ai-train-%j.out  # stdout → submit dir
-#SBATCH --error=chess-ai-train-%j.err   # stderr → submit dir
+#SBATCH --output=slurm/chess-ai-train-%j.out
+#SBATCH --error=slurm/chess-ai-train-%j.err
 #SBATCH --requeue                       # requeue on preemption; main.py auto-resumes
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=krish.modi.2000@gmail.com
@@ -55,9 +55,8 @@ echo "============================================================"
 # =============================================================================
 CHESS_AI_DIR="$HOME/EE542-Project/FINAL/chess_ai"
 cd "$CHESS_AI_DIR"
-mkdir -p logs
 
-exec 2> >(tee -a "logs/stderr_${SLURM_JOB_ID}.log" >&2)
+exec 2> >(tee -a "slurm/stderr_${SLURM_JOB_ID}.log" >&2)
 
 # =============================================================================
 # PYTHON ENVIRONMENT

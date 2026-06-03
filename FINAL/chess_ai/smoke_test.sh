@@ -936,7 +936,7 @@ slurm_check "a100: make -j build"                "slurm/train_a100.sbatch" 'make
 slurm_check "a100: copies .so to game_engine"    "slurm/train_a100.sbatch" 'cp mcts_engine_cpp'
 slurm_check "a100: runs game_engine/main.py"     "slurm/train_a100.sbatch" 'game_engine/main.py'
 slurm_check "a100: --requeue for preemption"     "slurm/train_a100.sbatch" 'requeue'
-slurm_check "a100: stderr tee to logs/"          "slurm/train_a100.sbatch" 'tee.*logs/stderr'
+slurm_check "a100: stderr tee to slurm/"         "slurm/train_a100.sbatch" 'tee.*slurm/stderr'
 
 slurm_check "v100: gres=gpu:1 (CARC syntax)"     "slurm/train_v100.sbatch" 'gres=gpu:1'
 slurm_check "v100: constraint targets v100"      "slurm/train_v100.sbatch" 'constraint.*v100'
