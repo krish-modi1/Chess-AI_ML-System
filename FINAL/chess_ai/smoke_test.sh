@@ -609,7 +609,7 @@ def check(name, fn):
     except Exception as e:
         print(f"FAIL: {name} | {str(e).replace(chr(10),' ')[:120]}")
 
-from game_engine.evaluation import EvalMCTS, Arena, StockfishEvaluator
+from game_engine.evaluation import EvalMCTS, Arena, StockfishEvaluator, _play_stockfish_game
 import inspect
 
 check("EvalMCTS importable", lambda: None)
@@ -633,11 +633,11 @@ check("Arena.play_game calls advance_root after each move",
     lambda: None if "advance_root" in src_arena
             else (_ for _ in ()).throw(Exception("advance_root not called")))
 
-src_sf = inspect.getsource(StockfishEvaluator.evaluate_with_bayeselo)
-check("StockfishEvaluator.evaluate_with_bayeselo calls advance_root",
+src_sf = inspect.getsource(_play_stockfish_game)
+check("_play_stockfish_game (Stockfish worker) calls advance_root",
     lambda: None if "advance_root" in src_sf
             else (_ for _ in ()).throw(Exception("advance_root not called")))
-check("StockfishEvaluator.evaluate_with_bayeselo calls reset_cache",
+check("_play_stockfish_game (Stockfish worker) calls reset_cache",
     lambda: None if "reset_cache" in src_sf
             else (_ for _ in ()).throw(Exception("reset_cache not called")))
 PY
