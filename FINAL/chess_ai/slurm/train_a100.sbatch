@@ -2,14 +2,14 @@
 # =============================================================================
 # Chess AI Training Job — A100 / A40 (USC CARC Discovery)
 #
-# Submit from:  ~/EE542-Project/FINAL/chess_ai/
+# Submit from:  ~/Chess-AI_ML-System/FINAL/chess_ai/
 #   sbatch slurm/train_a100.sbatch
 #
 # BEFORE FIRST SUBMIT:
 #   1. Fill in YOUR_ACCOUNT below (run: sacctmgr show user $USER)
 #   2. Upload model:
 #        scp game_engine/model/best_model.pth \
-#            krishmod@discovery.usc.edu:~/EE542-Project/FINAL/chess_ai/game_engine/model/
+#            krishmod@discovery.usc.edu:~/Chess-AI_ML-System/FINAL/chess_ai/game_engine/model/
 #   3. Push code:  git push && on CARC: git pull
 # =============================================================================
 
@@ -57,7 +57,7 @@ echo "============================================================"
 # =============================================================================
 # PATHS
 # =============================================================================
-CHESS_AI_DIR="$HOME/EE542-Project/FINAL/chess_ai"
+CHESS_AI_DIR="$HOME/Chess-AI_ML-System/FINAL/chess_ai"
 cd "$CHESS_AI_DIR"
 
 # Tee stderr to slurm/ alongside the .out/.err files

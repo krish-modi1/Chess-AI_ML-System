@@ -11,12 +11,12 @@
 #   • sbatch script has --account filled in
 #
 # Usage (on CARC login node):
-#   bash ~/EE542-Project/FINAL/chess_ai/slurm/carc_preflight.sh
+#   bash ~/Chess-AI_ML-System/FINAL/chess_ai/slurm/carc_preflight.sh
 # =============================================================================
 
 set -uo pipefail
 
-CHESS_AI_DIR="${CHESS_AI_DIR:-$HOME/EE542-Project/FINAL/chess_ai}"
+CHESS_AI_DIR="${CHESS_AI_DIR:-$HOME/Chess-AI_ML-System/FINAL/chess_ai}"
 
 PASS=0; FAIL=0; WARN=0
 
@@ -29,7 +29,7 @@ header() { printf "\n── %s\n" "$1"; }
 header "1. SLURM account"
 # =============================================================================
 
-ACCOUNT=$(sacctmgr show user "$USER" format=account --noheader -P 2>/dev/null | head -1 | tr -d '[:space:]')
+ACCOUNT=$(sacctmgr show assoc where user="$USER" format=account --noheader -P 2>/dev/null | head -1 | tr -d '[:space:]')
 if [[ -n "$ACCOUNT" ]]; then
     ok "Account: $ACCOUNT"
     echo "     → Add this to --account= in your sbatch scripts"
@@ -82,6 +82,8 @@ check_module() {
 
 module purge 2>/dev/null
 module load ver/2506 2>/dev/null && ok "module ver/2506 loaded" || fail "module ver/2506 not available"
+# gcc must be loaded before cuda/12.9.1 becomes visible
+module load gcc/14.3.0 2>/dev/null
 
 check_module "gcc/14.3.0"
 check_module "cuda/12.9.1"
@@ -166,7 +168,7 @@ fi
 header "6. Project directory structure"
 # =============================================================================
 
-for d in game_engine slurm logs; do
+for d in game_engine slurm; do
     if [[ -d "$CHESS_AI_DIR/$d" ]]; then
         ok "directory $d exists"
     else

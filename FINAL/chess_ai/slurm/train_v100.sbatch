@@ -2,7 +2,7 @@
 # =============================================================================
 # Chess AI Training Job — V100 (USC CARC Discovery)
 #
-# Submit from:  ~/EE542-Project/FINAL/chess_ai/
+# Submit from:  ~/Chess-AI_ML-System/FINAL/chess_ai/
 #   sbatch slurm/train_v100.sbatch
 #
 # Use train_a100.sbatch instead if A100/A40 nodes are available —
@@ -53,7 +53,7 @@ echo "============================================================"
 # =============================================================================
 # PATHS
 # =============================================================================
-CHESS_AI_DIR="$HOME/EE542-Project/FINAL/chess_ai"
+CHESS_AI_DIR="$HOME/Chess-AI_ML-System/FINAL/chess_ai"
 cd "$CHESS_AI_DIR"
 
 exec 2> >(tee -a "slurm/stderr_${SLURM_JOB_ID}.log" >&2)
