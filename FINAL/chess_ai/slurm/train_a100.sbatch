@@ -65,29 +65,24 @@ exec 2> >(tee -a "slurm/stderr_${SLURM_JOB_ID}.log" >&2)
 
 # =============================================================================
 # PYTHON ENVIRONMENT
-# Strategy: use conda if the chessai env exists; otherwise use module Python
-# + pip install --user.  Conda is more reproducible for PyTorch CUDA builds.
+# Detect conda env by path (reliable across module versions).
+# Env persists in $HOME between jobs — only created once.
 # =============================================================================
-if command -v conda &>/dev/null || module load conda 2>/dev/null; then
-    eval "$(conda shell.bash hook)"
-    if conda env list | grep -q "^chessai "; then
-        conda activate chessai
-        echo "Python (conda/chessai): $(python3 --version)"
-    else
-        echo "chessai conda env not found — creating from requirements.txt"
-        conda create -y -n chessai python=3.11
-        conda activate chessai
-        # Install PyTorch with CUDA 12.x wheel first
-        pip install --quiet torch --index-url https://download.pytorch.org/whl/cu124
-        pip install --quiet -r requirements.txt
-    fi
+CONDA_ENV_DIR="$HOME/.conda/envs/chessai"
+
+module load conda 2>/dev/null || true
+eval "$(conda shell.bash hook 2>/dev/null)" || true
+
+if [[ -d "$CONDA_ENV_DIR" ]]; then
+    conda activate "$CONDA_ENV_DIR"
+    echo "Python (conda/chessai): $(python3 --version)"
 else
-    # Fall back: module Python + pip --user
-    module load python/3.11.9 2>/dev/null || true
-    echo "Python (module): $(python3 --version)"
-    pip install --user --quiet --disable-pip-version-check \
-        torch --index-url https://download.pytorch.org/whl/cu124
-    pip install --user --quiet --disable-pip-version-check -r requirements.txt
+    echo "Creating chessai conda env (one-time setup)..."
+    conda create -y -p "$CONDA_ENV_DIR" python=3.11
+    conda activate "$CONDA_ENV_DIR"
+    pip install --quiet torch --index-url https://download.pytorch.org/whl/cu124
+    pip install --quiet -r requirements.txt
+    echo "Conda env created at $CONDA_ENV_DIR"
 fi
 
 # Verify PyTorch sees the GPU
