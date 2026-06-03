@@ -1,6 +1,4 @@
-# EE542 Chess AI - PocketZero
-
-## Submitted by: Krish Modi | Mohith Suresh | Adithya Srivastava
+# Chess AI - PocketZero
 
 ## 1. Download the Model
 
