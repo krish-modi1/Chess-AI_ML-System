@@ -6,7 +6,7 @@
 # extension, MCTS tree reuse, data augmentation, trainer, evaluation,
 # Stockfish, metrics.json, self-play data, source code, and SLURM scripts.
 #
-# Usage:  bash smoke_test.sh          (from FINAL/chess_ai/)
+# Usage:  bash smoke_test.sh          (from chess_ai/)
 #         PYTHON=/path/to/python bash smoke_test.sh
 # =============================================================================
 
@@ -232,11 +232,11 @@ from game_engine.chess_env import ChessGame
 model = None
 def load_model():
     global model
-    m = ChessCNN(upgraded=True)
+    m = ChessCNN()
     m.load_state_dict(state)
     m.eval()
     model = m
-check("ChessCNN(upgraded=True) loads from checkpoint", load_model)
+check("ChessCNN() loads from checkpoint", load_model)
 
 if model:
     t = torch.zeros(1, 120, 8, 8)
@@ -416,7 +416,7 @@ from game_engine.cnn import ChessCNN
 from game_engine.mcts_worker_cpp import MCTSWorker
 
 raw = torch.load("game_engine/model/best_model.pth", map_location="cpu")
-model = ChessCNN(upgraded=True)
+model = ChessCNN()
 model.load_state_dict(raw["model_state_dict"])
 model.eval()
 
@@ -930,6 +930,7 @@ gcp_check "run_gcp.sh: NUM_WORKERS from nproc"   'NUM_WORKERS'
 gcp_check "run_gcp.sh: runs game_engine/main.py"  'game_engine/main.py'
 gcp_check "run_gcp.sh: background mode flag"      '\-\-background'
 gcp_check "run_gcp.sh: logs to logs/training.log" 'logs/training.log'
+src_check "run_gcp.sh: exports EVAL_SIMULATIONS"  "run_gcp.sh" 'EVAL_SIMULATIONS'
 
 # =============================================================================
 # SUMMARY

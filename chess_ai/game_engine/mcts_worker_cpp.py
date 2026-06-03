@@ -21,7 +21,6 @@ import time
 
 sys.path.append(os.getcwd())
 
-from game_engine.mcts import move_to_index
 import mcts_engine_cpp
 
 
@@ -338,40 +337,6 @@ class MCTSWorker:
     def reset_cache(self):
         """Discard the cached tree. Call at game start or after a game ends."""
         self.mcts_engine.reset_cache()
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    # UTILITY METHODS
-    # ═══════════════════════════════════════════════════════════════════════════
-
-    def get_policy_vector(self, root, alpha=1.3):
-        """
-        Extract policy vector from root node.
-        Python fallback for compatibility.
-        """
-        policy_vector = np.zeros(8192, dtype=np.float32)
-        visits = {}
-        
-        for action_uci, child in root.children.items():
-            idx = move_to_index(action_uci)
-            if idx < 8192:
-                visits[idx] = child.visit_count
-        
-        if not visits:
-            return policy_vector
-        
-        counts = np.array(list(visits.values()), dtype=np.float32)
-        indices = np.array(list(visits.keys()), dtype=np.int32)
-        
-        sharpened = counts ** alpha
-        total = sharpened.sum()
-        
-        if total <= 0:
-            return policy_vector
-        
-        probs = sharpened / total
-        policy_vector[indices] = probs
-        
-        return policy_vector
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

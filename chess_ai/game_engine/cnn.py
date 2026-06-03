@@ -43,22 +43,14 @@ class ResidualBlock(nn.Module):
         return self.act(out)
 
 class ChessCNN(nn.Module):
-    def __init__(self, upgraded: bool = False):
+    def __init__(self):
         super().__init__()
-        
-        # Configuration selection
-        if upgraded:
-            # UPGRADED CONFIG: 256 Channels, 20 Residual Blocks
-            input_channels = 120
-            filters = 256
-            num_res_blocks = 20
-            se_start_idx = 10  # SE blocks from layer 10 onwards
-        else:
-            # LEGACY CONFIG: 192 Channels, 10 Residual Blocks
-            input_channels = 120
-            filters = 192
-            num_res_blocks = 10
-            se_start_idx = 7
+        input_channels = 120
+        self.num_filters = 256
+        self.num_blocks = 20
+        filters = self.num_filters
+        num_res_blocks = self.num_blocks
+        se_start_idx = 10  # SE blocks from layer 10 onwards
 
         self.input_conv = nn.Sequential(
             nn.Conv2d(input_channels, filters, 3, padding=1, bias=False),

@@ -66,7 +66,7 @@ class InferenceServer:
 
     def loop(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = ChessCNN(upgraded=True).to(self.device)
+        model = ChessCNN().to(self.device)
         self.streams = [torch.cuda.Stream() for _ in range(self.num_streams)]
         self.current_stream_idx = 0
         

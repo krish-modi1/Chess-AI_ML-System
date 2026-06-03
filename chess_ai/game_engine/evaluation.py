@@ -31,8 +31,7 @@ class EvalMCTS:
         else:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Use upgraded=True to match training model (256 filters)
-        self.model = ChessCNN(upgraded=True).to(self.device)
+        self.model = ChessCNN().to(self.device)
         
         if os.path.exists(model_path):
             try:

@@ -192,7 +192,7 @@ def train_model(data_path="data/self_play",
     )
 
     # 2. Load Model
-    model = ChessCNN(upgraded=True).to(device)
+    model = ChessCNN().to(device)
     checkpoint = None
 
     if os.path.exists(input_model_path):

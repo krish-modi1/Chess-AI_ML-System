@@ -1,7 +1,6 @@
 import chess
 import uuid
 import numpy as np
-import copy
 
 _PIECE_MAP = {
     chess.PAWN: 0, chess.KNIGHT: 1, chess.BISHOP: 2,

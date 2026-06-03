@@ -39,7 +39,7 @@ def plot_metrics():
     win_rates = [h.get('arena_win_rate', 0.0) for h in history]
     
     # Filter for ELOs (might be None in some entries)
-    elo_data = [(h['iteration'], h['elo']) for h in history if h.get('elo') is not None]
+    elo_data = [(h['iteration'], h['model_elo']) for h in history if h.get('model_elo') is not None]
     elo_iters = [d[0] for d in elo_data]
     elos = [d[1] for d in elo_data]
     

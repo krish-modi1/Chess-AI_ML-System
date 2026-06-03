@@ -575,7 +575,7 @@ if __name__ == "__main__":
     
     if not os.path.exists(BEST_MODEL):
         print("Initializing random model...")
-        torch.save(ChessCNN(upgraded=True).state_dict(), BEST_MODEL)
+        torch.save(ChessCNN().state_dict(), BEST_MODEL)
 
     timeout_handler.start()
     print("⏱️ Deadlock timeout: 30 hour per iteration")
