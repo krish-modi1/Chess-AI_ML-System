@@ -9,6 +9,7 @@ import random
 import time
 import shutil
 import collections
+import multiprocessing as mp
 from datetime import datetime
 
 # Ensure project root is in path
@@ -177,6 +178,118 @@ class Arena:
         return outcome
 
 
+def _play_stockfish_game(args):
+    """
+    Play one game between EvalMCTS and Stockfish. Top-level for mp.Pool pickling.
+
+    Args:
+        args: tuple of (game_id, model_path, stockfish_path, simulations, stockfish_elo, max_moves)
+
+    Returns:
+        dict with keys: result, pgn_str, agent_is_white, game_id, num_moves
+        Returns None if the game fails (engine error, model error, etc.)
+    """
+    import io as _io
+    game_id, model_path, stockfish_path, simulations, stockfish_elo, max_moves = args
+
+    # Force CPU to avoid multi-process GPU OOM when running 20 workers in parallel
+    try:
+        agent = EvalMCTS(model_path, simulations=simulations, device=torch.device('cpu'))
+    except Exception as e:
+        print(f"[Stockfish Worker {game_id}] Failed to load model: {e}")
+        return None
+
+    if not os.path.exists(stockfish_path):
+        print(f"[Stockfish Worker {game_id}] Stockfish not found at {stockfish_path}")
+        return None
+
+    game = ChessGame()
+    agent_is_white = (game_id % 2 == 0)
+    position_history = collections.deque(maxlen=7)
+    agent.reset_cache()
+
+    try:
+        with chess.engine.SimpleEngine.popen_uci(stockfish_path) as engine:
+            try:
+                engine.configure({"UCI_LimitStrength": True, "UCI_Elo": stockfish_elo})
+            except Exception:
+                pass  # Older Stockfish versions may not support UCI_Elo
+
+            while not game.is_over and len(game.moves) < max_moves:
+                is_agent_turn = (
+                    (game.board.turn == chess.WHITE and agent_is_white) or
+                    (game.board.turn == chess.BLACK and not agent_is_white)
+                )
+
+                if is_agent_turn:
+                    history_snapshot = list(position_history)
+                    move = agent.get_move(
+                        game, temperature=0.0, use_dirichlet=False, history=history_snapshot
+                    )
+                    if move is None:
+                        print(f"[Stockfish Worker {game_id}] Agent returned None move, stopping game")
+                        break
+                else:
+                    try:
+                        res = engine.play(game.board, chess.engine.Limit(time=0.1))
+                        move = res.move.uci()
+                    except Exception as e:
+                        print(f"[Stockfish Worker {game_id}] Stockfish engine error: {e}")
+                        break
+
+                agent.advance_root(move)
+                position_history.appendleft(game.board.copy())
+                game.push(move)
+
+    except Exception as e:
+        print(f"[Stockfish Worker {game_id}] Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+    result = game.result
+
+    # Build PGN
+    white_name = "Model" if agent_is_white else f"Stockfish {stockfish_elo}"
+    black_name = f"Stockfish {stockfish_elo}" if agent_is_white else "Model"
+
+    pgn_game = chess.pgn.Game()
+    pgn_game.headers["Event"] = "Model vs Stockfish"
+    pgn_game.headers["Site"] = "Localhost"
+    pgn_game.headers["Date"] = datetime.now().strftime("%Y.%m.%d")
+    pgn_game.headers["Round"] = str(game_id + 1)
+    pgn_game.headers["White"] = white_name
+    pgn_game.headers["Black"] = black_name
+    pgn_game.headers["Result"] = result
+
+    node = pgn_game
+    for move_uci in game.moves:
+        try:
+            node = node.add_variation(chess.Move.from_uci(move_uci))
+        except Exception:
+            pass
+
+    buf = _io.StringIO()
+    print(pgn_game, file=buf, end="\n\n")
+    pgn_str = buf.getvalue()
+
+    if not game.is_over and len(game.moves) >= max_moves:
+        print(f"[Stockfish Worker {game_id}] Forced draw (max moves {max_moves})")
+
+    print(
+        f"[Stockfish Worker {game_id}] Game {game_id + 1}: {result} "
+        f"({white_name} vs {black_name}) | Moves: {len(game.moves)}"
+    )
+
+    return {
+        "result": result,
+        "pgn_str": pgn_str,
+        "agent_is_white": agent_is_white,
+        "game_id": game_id,
+        "num_moves": len(game.moves),
+    }
+
+
 class StockfishEvaluator:
     """Evaluate model against Stockfish with BayesElo rating."""
     
@@ -186,151 +299,75 @@ class StockfishEvaluator:
     
     def evaluate_with_bayeselo(self, model_path, pgn_output_path, num_games=20,
                                stockfish_elo=1320, max_moves=400):
-        """
-        Play games against Stockfish, save PGN, and run BayesElo for rating.
-        
-        Args:
-            model_path: Path to trained model
-            pgn_output_path: Where to save PGN file
-            num_games: Number of games to play
-            stockfish_elo: Stockfish skill level (Elo)
-            max_moves: Maximum moves per game before forced draw
-        
-        Returns:
-            Dictionary with BayesElo results or None on failure
-        """
-        print(f"\n{'='*70}\n📊 STOCKFISH EVALUATION - {num_games} GAMES\n{'='*70}\n")
-        
-        agent = EvalMCTS(model_path, simulations=self.simulations)
-        
+        print(f"\n{'='*70}\n📊 STOCKFISH EVALUATION - {num_games} GAMES (parallel)\n{'='*70}\n")
+
         if not os.path.exists(self.stockfish_path):
             print(f"❌ Stockfish not found at {self.stockfish_path}")
             return None
-        
-        pgn_games = []
-        win_count = 0
-        loss_count = 0
-        draw_count = 0
-        
+
+        # Build args list — one tuple per game
+        args_list = [
+            (i, model_path, self.stockfish_path, self.simulations, stockfish_elo, max_moves)
+            for i in range(num_games)
+        ]
+
+        # Spawn one worker per game. Use 'spawn' to avoid CUDA fork issues.
+        ctx = mp.get_context('spawn')
+        print(f"  Launching {num_games} parallel workers...")
         try:
-            with chess.engine.SimpleEngine.popen_uci(self.stockfish_path) as engine:
-                # Try to configure Elo-limited Stockfish
-                try:
-                    engine.configure({"UCI_LimitStrength": True, "UCI_Elo": stockfish_elo})
-                except Exception:
-                    print("[Warning] Stockfish version may not support UCI_Elo configuration")
-                
-                for i in range(num_games):
-                    game = ChessGame()
-                    agent_is_white = (i % 2 == 0)
-                    position_history = collections.deque(maxlen=7)
-
-                    # Reset tree cache at game start
-                    agent.reset_cache()
-
-                    while not game.is_over and len(game.moves) < max_moves:
-                        is_agent = (
-                            (game.board.turn == chess.WHITE and agent_is_white) or
-                            (game.board.turn == chess.BLACK and not agent_is_white)
-                        )
-
-                        if is_agent:
-                            history_snapshot = list(position_history)
-                            move = agent.get_move(game, temperature=0.0,
-                                                  use_dirichlet=False,
-                                                  history=history_snapshot)
-                            if move is None:
-                                print(f" [Stockfish] Game {i+1}: Agent move failed, stopping game")
-                                break
-                        else:
-                            try:
-                                res = engine.play(game.board, chess.engine.Limit(time=0.1))
-                                move = res.move.uci()
-                            except Exception as e:
-                                print(f" [Stockfish] Game {i+1}: Stockfish error: {e}")
-                                break
-
-                        if move is None:
-                            break
-
-                        # Advance agent tree regardless of who moved
-                        agent.advance_root(move)
-
-                        position_history.appendleft(game.board.copy())
-                        game.push(move)
-                    
-                    # Forced draw logging
-                    if not game.is_over and len(game.moves) >= max_moves:
-                        print(f" [Stockfish] Game {i+1} ended in FORCED DRAW (Max moves {max_moves})")
-                    
-                    result = game.result
-                    
-                    # Count results from model perspective and log nicely
-                    if result == "1-0":
-                        if agent_is_white:
-                            win_count += 1
-                            result_log = "1-0 (Model vs Stockfish)"
-                        else:
-                            loss_count += 1
-                            result_log = "1-0 (Stockfish vs Model)"
-                    elif result == "0-1":
-                        if agent_is_white:
-                            loss_count += 1
-                            result_log = "0-1 (Model vs Stockfish)"
-                        else:
-                            win_count += 1
-                            result_log = "0-1 (Stockfish vs Model)"
-                    else:
-                        draw_count += 1
-                        result_log = "1/2-1/2 (Model vs Stockfish)"
-                    
-                    white_name = "Model" if agent_is_white else f"Stockfish {stockfish_elo}"
-                    black_name = f"Stockfish {stockfish_elo}" if agent_is_white else "Model"
-                    print(f"Game {i+1}/{num_games}: {result} ({white_name} vs {black_name}) | Total Moves: {len(game.moves)}")
-                    
-                    # Build PGN game
-                    pgn_game = chess.pgn.Game()
-                    pgn_game.headers["Event"] = "Model vs Stockfish"
-                    pgn_game.headers["Site"] = "Localhost"
-                    pgn_game.headers["Date"] = datetime.now().strftime("%Y.%m.%d")
-                    pgn_game.headers["Round"] = str(i + 1)
-                    pgn_game.headers["White"] = white_name
-                    pgn_game.headers["Black"] = black_name
-                    pgn_game.headers["Result"] = result
-                    
-                    node = pgn_game
-                    for move_uci in game.moves:
-                        try:
-                            move_obj = chess.Move.from_uci(move_uci)
-                            node = node.add_variation(move_obj)
-                        except Exception:
-                            pass
-                    
-                    pgn_games.append(pgn_game)
-        
+            with ctx.Pool(processes=num_games) as pool:
+                game_results = pool.map(_play_stockfish_game, args_list)
         except Exception as e:
-            print(f"❌ Evaluation Error: {e}")
+            print(f"❌ Pool execution error: {e}")
             import traceback
             traceback.print_exc()
             return None
-        
+
+        # Filter out failed games
+        game_results = [r for r in game_results if r is not None]
+        if not game_results:
+            print("❌ All worker games failed")
+            return None
+
+        # Aggregate results
+        win_count = 0
+        loss_count = 0
+        draw_count = 0
+        pgn_parts = []
+
+        for r in sorted(game_results, key=lambda x: x["game_id"]):
+            result = r["result"]
+            agent_is_white = r["agent_is_white"]
+            pgn_parts.append(r["pgn_str"])
+
+            if result == "1-0":
+                if agent_is_white:
+                    win_count += 1
+                else:
+                    loss_count += 1
+            elif result == "0-1":
+                if agent_is_white:
+                    loss_count += 1
+                else:
+                    win_count += 1
+            else:
+                draw_count += 1
+
         # Save PGN file
         os.makedirs(os.path.dirname(pgn_output_path), exist_ok=True)
         try:
             with open(pgn_output_path, 'w') as f:
-                for pgn_game in pgn_games:
-                    f.write(str(pgn_game))
-                    f.write("\n\n")
-            print(f"\n✅ Saved {len(pgn_games)} games to {pgn_output_path}")
+                f.write("".join(pgn_parts))
+            print(f"\n✅ Saved {len(game_results)} games to {pgn_output_path}")
         except Exception as e:
             print(f"❌ Failed to save PGN: {e}")
             return None
-        
+
         # Run BayesElo
         try:
             runner = BayesEloRunner(stockfish_elo=stockfish_elo)
             bayeselo_results = runner.run(pgn_output_path)
-            
+
             if bayeselo_results:
                 print(f"\n{'='*70}\n🏆 BAYESELO RESULTS\n{'='*70}")
                 print(
@@ -344,18 +381,18 @@ class StockfishEvaluator:
                     f"[{bayeselo_results['diff_ci_lower']:.0f}, {bayeselo_results['diff_ci_upper']:.0f}]"
                 )
                 print(f"{'='*70}\n")
-                
+
                 bayeselo_results['win_count'] = win_count
                 bayeselo_results['loss_count'] = loss_count
                 bayeselo_results['draw_count'] = draw_count
-                bayeselo_results['total_games'] = num_games
-                bayeselo_results['win_rate'] = win_count / num_games if num_games > 0 else 0.0
-                
+                bayeselo_results['total_games'] = len(game_results)
+                bayeselo_results['win_rate'] = win_count / len(game_results) if game_results else 0.0
+
                 return bayeselo_results
             else:
                 print("❌ BayesElo computation failed")
                 return None
-        
+
         except Exception as e:
             print(f"❌ BayesElo Error: {e}")
             import traceback
