@@ -221,6 +221,7 @@ def _play_stockfish_game(args):
                     (game.board.turn == chess.BLACK and not agent_is_white)
                 )
 
+                move = None
                 if is_agent_turn:
                     history_snapshot = list(position_history)
                     move = agent.get_move(
@@ -228,14 +229,15 @@ def _play_stockfish_game(args):
                     )
                     if move is None:
                         print(f"[Stockfish Worker {game_id}] Agent returned None move, stopping game")
-                        break
                 else:
                     try:
                         res = engine.play(game.board, chess.engine.Limit(time=0.1))
                         move = res.move.uci()
                     except Exception as e:
                         print(f"[Stockfish Worker {game_id}] Stockfish engine error: {e}")
-                        break
+
+                if move is None:
+                    break
 
                 agent.advance_root(move)
                 position_history.appendleft(game.board.copy())
@@ -315,7 +317,8 @@ class StockfishEvaluator:
         ctx = mp.get_context('spawn')
         print(f"  Launching {num_games} parallel workers...")
         try:
-            with ctx.Pool(processes=num_games) as pool:
+            num_workers = min(num_games, os.cpu_count() or 4)
+            with ctx.Pool(processes=num_workers) as pool:
                 game_results = pool.map(_play_stockfish_game, args_list)
         except Exception as e:
             print(f"❌ Pool execution error: {e}")
