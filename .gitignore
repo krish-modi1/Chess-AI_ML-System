@@ -109,7 +109,6 @@ conda-env.yaml
 .cursorindexingignore
 
 # Emacs
-*~
 \#*\#
 .\#*
 
@@ -217,8 +216,6 @@ $RECYCLE.BIN/
 # ============================================================================
 
 # Build outputs
-dist/
-*.egg-info/
 target/
 outputs/
 
@@ -282,19 +279,6 @@ secrets/
 # ============================================================================
 # Use these if you want to track files normally ignored above
 
-# Track important config files
-!config/.gitkeep
-!config/settings.py
-
-# Track empty directories
-!data/.gitkeep
-!data/lichess_raw/.gitkeep
-!data/training_data/.gitkeep
-!data/played_games/.gitkeep
-!model/checkpoints/.gitkeep
-!logs/.gitkeep
-!evaluation/.gitkeep
-
 # Track important documentation
 !README.md
 !requirements.txt
@@ -304,6 +288,5 @@ commands.txt
 token.txt
 build/
 Presentation/
-FINAL/chess_ai/game_engine/mcts_engine_cpp.cpython-311-x86_64-linux-gnu.so
+chess_ai/game_engine/mcts_engine_cpp*.so
 local/
-FINAL/chess_ai/bin/
