@@ -200,6 +200,10 @@ export NUM_WORKERS=$(( NCPU > 2 ? NCPU - 2 : 1 ))
 export SIMULATIONS=800
 export GAMES_PER_WORKER=2
 export ITERATIONS=1000
+export EVAL_SIMULATIONS=400
+export STOCKFISH_GAMES=20
+export EVAL_WORKERS=10
+export GAMES_PER_EVAL_WORKER=4
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 8. Print final config summary
@@ -216,6 +220,8 @@ echo "  GAMES_PER_WORKER : $GAMES_PER_WORKER"
 echo "  ITERATIONS       : $ITERATIONS"
 echo "  STOCKFISH_PATH   : $STOCKFISH_PATH"
 echo "  Log file         : $CHESS_AI_DIR/logs/training.log"
+echo "  EVAL_SIMULATIONS : $EVAL_SIMULATIONS"
+echo "  STOCKFISH_GAMES  : $STOCKFISH_GAMES"
 echo ""
 
 # ──────────────────────────────────────────────────────────────────────────────
