@@ -5,6 +5,7 @@ import sys
 import time
 import shutil
 import gc
+import collections
 import torch
 import numpy as np
 import math
@@ -117,7 +118,8 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
     
     if hasattr(os, 'sched_setaffinity'):
         try:
-            os.sched_setaffinity(0, {worker_id % 44})
+            cpu_count = len(os.sched_getaffinity(0)) or os.cpu_count() or 32
+            os.sched_setaffinity(0, {worker_id % cpu_count})
         except Exception:
             pass  # CPU affinity is optional; ignore if not supported
     
@@ -134,39 +136,56 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
     
     for i in range(game_limit):
         print(f" [Worker {worker_id}] Starting Game {i+1}...")
-        
+
         game_start = time.time()
         game = ChessGame()
         game_data = []
         forced_draw = False
-        
+        # Per-game position history: chess.Board copies, most recent first.
+        # Populated before each search so the NN sees the last 7 board states.
+        position_history = collections.deque(maxlen=7)
+
+        # Reset MCTS tree cache at game start so we never carry state across games.
+        worker.reset_cache()
+
         try:
             while not game.is_over:
                 if len(game.moves) >= MAX_MOVES_PER_GAME:
                     forced_draw = True
                     break
-                
+
                 move_start = time.time()
                 move_count = len(game.moves)
-                
+
                 if move_count < 16:
                     current_temp = 1.0
                 else:
                     current_temp = 0.0
-                
-                best_move, mcts_policy = worker.search(game, temperature=current_temp)
+
+                # Snapshot history for this search (excludes current board)
+                history_snapshot = list(position_history)
+                best_move, mcts_policy = worker.search(
+                    game, temperature=current_temp, history=history_snapshot
+                )
+
+                # Advance tree cache to the played move before the next search.
+                # This retains the explored subtree, saving redundant simulations.
+                worker.advance_root(best_move)
+
+                # Save current board to history before applying the move
+                position_history.appendleft(game.board.copy())
 
                 # Try to apply the move
                 move_applied = game.push(best_move)
                 if not move_applied:
                     print(f" [Worker {worker_id}] ❌ Illegal move from MCTS: {best_move}")
-                    # Optional: print some context
                     print(f" [Worker {worker_id}]   Legal moves: {game.legal_moves()}")
-                    break  # Abort this game; don't pretend it finished normally
+                    worker.reset_cache()
+                    break
 
-                # Only record data if the move was applied
+                # Record post-move state with its history (history now includes pre-move board)
                 game_data.append({
-                    "state": game.to_tensor(),
+                    "state": game.to_tensor(list(position_history)),
                     "policy": mcts_policy,
                     "turn": game.turn_player,
                 })
@@ -221,7 +240,10 @@ def run_server_wrapper(server):
     setup_child_logging()
     if hasattr(os, 'sched_setaffinity'):
         try:
-            os.sched_setaffinity(0, {44, 45, 46, 47})
+            available = sorted(os.sched_getaffinity(0))
+            # Pin server to the last 4 CPUs in the affinity set
+            server_cpus = set(available[-4:]) if len(available) >= 4 else set(available)
+            os.sched_setaffinity(0, server_cpus)
         except Exception:
             pass  # CPU affinity is optional; ignore if not supported
         
@@ -231,11 +253,12 @@ def run_server_wrapper(server):
     server.loop()
 
 # ==========================================
-#        BALANCED GCP CONFIG (T4 OPTIMIZED)
+#        RUNTIME CONFIGURATION
+# All values can be overridden via environment variables for SLURM/CARC runs.
 # ==========================================
 
 # --- PATHS ---
-STOCKFISH_PATH = "/usr/games/stockfish" 
+STOCKFISH_PATH = os.environ.get("STOCKFISH_PATH", "/usr/games/stockfish")
 LOG_FILE = "training_log.txt"
 MODEL_DIR = "game_engine/model"
 DATA_DIR = "data/self_play"
@@ -244,29 +267,29 @@ CANDIDATE_MODEL = f"{MODEL_DIR}/candidate.pth"
 
 # --- CUDA ---
 CUDA_TIMEOUT_INFERENCE = 1.0
-CUDA_STREAMS = 8 
-CUDA_BATCH_SIZE = 4096
+CUDA_STREAMS = int(os.environ.get("CUDA_STREAMS", 8))
+CUDA_BATCH_SIZE = int(os.environ.get("CUDA_BATCH_SIZE", 4096))
 
 # --- EXECUTION ---
 RESUME_ITERATION = None
-ITERATIONS = 1000
-NUM_WORKERS = 150            
-WORKER_BATCH_SIZE = 320       
-GAMES_PER_WORKER = 2        
+ITERATIONS = int(os.environ.get("ITERATIONS", 1000))
+NUM_WORKERS = int(os.environ.get("NUM_WORKERS", 150))
+WORKER_BATCH_SIZE = int(os.environ.get("WORKER_BATCH_SIZE", 320))
+GAMES_PER_WORKER = int(os.environ.get("GAMES_PER_WORKER", 2))
 
 # --- QUALITY ---
-SIMULATIONS = 1600           
-EVAL_SIMULATIONS = 1600      
+SIMULATIONS = int(os.environ.get("SIMULATIONS", 1600))
+EVAL_SIMULATIONS = int(os.environ.get("EVAL_SIMULATIONS", 1600))
 
 # --- EVALUATION CONFIG ---
-EVAL_WORKERS = 10           
-GAMES_PER_EVAL_WORKER = 4   
-STOCKFISH_GAMES = 20
-STOCKFISH_ELO = 1320        
+EVAL_WORKERS = int(os.environ.get("EVAL_WORKERS", 10))
+GAMES_PER_EVAL_WORKER = int(os.environ.get("GAMES_PER_EVAL_WORKER", 4))
+STOCKFISH_GAMES = int(os.environ.get("STOCKFISH_GAMES", 20))
+STOCKFISH_ELO = int(os.environ.get("STOCKFISH_ELO", 1320))
 
 # --- RULES ---
-MAX_MOVES_PER_GAME = 800   
-EVAL_MAX_MOVES_PER_GAME = 800 
+MAX_MOVES_PER_GAME = int(os.environ.get("MAX_MOVES_PER_GAME", 800))
+EVAL_MAX_MOVES_PER_GAME = int(os.environ.get("EVAL_MAX_MOVES_PER_GAME", 800)) 
 
 current_iter = get_start_iteration(DATA_DIR) - 1
 if current_iter < 10:
@@ -412,13 +435,14 @@ def run_training_phase(iteration):
     print(f"\n=== ITERATION {iteration}: TRAINING PHASE ===")
     cleanup_memory() # Clear VRAM before training
     
-    p_loss, v_loss = train_model(data_path=DATA_DIR, 
-                input_model_path=BEST_MODEL, 
+    p_loss, v_loss = train_model(data_path=DATA_DIR,
+                input_model_path=BEST_MODEL,
                 output_model_path=CANDIDATE_MODEL,
                 epochs=TRAIN_EPOCHS,
                 batch_size=TRAIN_BATCH_SIZE,
                 lr=TRAIN_LR,
-                window_size=TRAIN_WINDOW)
+                window_size=TRAIN_WINDOW,
+                total_iterations=ITERATIONS)
     
     return p_loss, v_loss
 
@@ -492,8 +516,8 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss):
                 if metrics_history and len(metrics_history) > 0:
                     # Get last entry with valid model elo (not stockfish_elo)
                     for entry in reversed(metrics_history):
-                        if entry.get("elo") is not None:  # ← FIXED: 'elo' not 'stockfish_elo'
-                            last_champion_elo = entry.get("elo")
+                        if entry.get("model_elo") is not None:
+                            last_champion_elo = entry.get("model_elo")
                             print(f" [Metrics] Last Champion Model Elo: {last_champion_elo:.0f}")
                             break
     except Exception as e:

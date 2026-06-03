@@ -305,3 +305,4 @@ token.txt
 build/
 Presentation/
 FINAL/chess_ai/game_engine/mcts_engine_cpp.cpython-311-x86_64-linux-gnu.so
+local/

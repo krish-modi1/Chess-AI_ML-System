@@ -74,6 +74,10 @@ class MCTSWorker:
         self.cpu = 1.0
         self.seed = seed
 
+        # History for current game — list of chess.Board copies, most recent first.
+        # Set by search() on each call; consumed by _batch_inference_callback.
+        self._current_history = []
+
         # Create C++ MCTS engine instance
         self.mcts_engine = mcts_engine_cpp.MCTSEngine(simulations, batch_size)
 
@@ -125,23 +129,21 @@ class MCTSWorker:
                 values: np.ndarray shape (batch_size,)
         """
         batch_size = len(leaf_states)
-        
+
         if batch_size == 0:
-            # Edge case: no leaves to evaluate
             return (
                 np.zeros((0, 8192), dtype=np.float32),
                 np.zeros((0,), dtype=np.float32)
             )
-        
+
         # ─────────────────────────────────────────────────────────────────────
-        # Step 1: Convert ChessGame states to tensor batch
+        # Step 1: Convert ChessGame states to tensor batch (with history)
+        # All leaves share the same game history up to the root — standard
+        # approximation for history-stacked MCTS.
         # ─────────────────────────────────────────────────────────────────────
-        tensors = []
-        for state in leaf_states:
-            tensor = state.to_tensor()  # Shape: (16, 8, 8)
-            tensors.append(tensor)
-        
-        # Stack into batch tensor: shape (batch_size, 16, 8, 8)
+        tensors = [state.to_tensor(self._current_history) for state in leaf_states]
+
+        # Stack into batch tensor: shape (batch_size, 120, 8, 8)
         batch_tensor = torch.from_numpy(np.array(tensors))
         
         # ─────────────────────────────────────────────────────────────────────
@@ -188,28 +190,26 @@ class MCTSWorker:
     # MAIN SEARCH METHOD
     # ═══════════════════════════════════════════════════════════════════════════
     
-    def search(self, root_state, temperature=1.0):
+    def search(self, root_state, temperature=1.0, history=None):
         """
         Perform MCTS search with proper batched neural network inference.
-        
-        Flow:
-        1. Get root policy/value from inference server
-        2. Call C++ MCTS with inference callback
-        3. C++ handles tree traversal, calls callback for leaf batches
-        4. Return best move and policy vector
-        
+
         Args:
             root_state: ChessGame object for root position
             temperature: Temperature for move selection (0=greedy, 1=proportional)
-        
+            history: list of chess.Board copies, most recent first (up to 7).
+                     Used to build the stacked input tensor for every NN call
+                     during this search.
+
         Returns:
             Tuple of (best_move: str, policy_vector: np.ndarray)
         """
-        
+        self._current_history = history or []
+
         # ─────────────────────────────────────────────────────────────────────
         # Step 1: Get root position evaluation from inference server
         # ─────────────────────────────────────────────────────────────────────
-        root_tensor = torch.from_numpy(root_state.to_tensor())
+        root_tensor = torch.from_numpy(root_state.to_tensor(self._current_history))
         self.input_queue.put((self.worker_id, root_tensor))
         
         try:
@@ -266,43 +266,44 @@ class MCTSWorker:
     # DIRECT SEARCH (for evaluation without queue server)
     # ═══════════════════════════════════════════════════════════════════════════
     
-    def search_direct(self, root_state, model, temperature=1.0, use_dirichlet=True):
+    def search_direct(self, root_state, model, temperature=1.0, use_dirichlet=True, history=None):
         """
         Direct MCTS search without queue communication.
         Used for evaluation where we have direct model access.
-        
+
         Args:
             root_state: ChessGame object
             model: PyTorch model for direct inference
             temperature: Temperature for move selection
             use_dirichlet: Whether to add exploration noise (unused, C++ handles this)
-        
+            history: list of chess.Board copies, most recent first (up to 7)
+
         Returns:
             Tuple of (best_move: str, policy_vector: np.ndarray)
         """
+        self._current_history = history or []
         device = next(model.parameters()).device
-        
+
         def direct_inference_callback(leaf_states):
-            """Direct inference without queue server"""
             if len(leaf_states) == 0:
                 return (
                     np.zeros((0, 8192), dtype=np.float32),
                     np.zeros((0,), dtype=np.float32)
                 )
-            
-            tensors = [s.to_tensor() for s in leaf_states]
+
+            tensors = [s.to_tensor(self._current_history) for s in leaf_states]
             batch = torch.from_numpy(np.array(tensors)).to(device)
-            
+
             with torch.no_grad():
                 policies, values = model(batch)
-            
+
             return (
                 policies.cpu().numpy(),
                 values.cpu().numpy().flatten()
             )
-        
+
         # Get root evaluation
-        root_tensor = torch.from_numpy(root_state.to_tensor()).unsqueeze(0).to(device)
+        root_tensor = torch.from_numpy(root_state.to_tensor(self._current_history)).unsqueeze(0).to(device)
         with torch.no_grad():
             root_policy, root_value = model(root_tensor)
         
@@ -322,9 +323,26 @@ class MCTSWorker:
         return best_move, policy_vector
 
     # ═══════════════════════════════════════════════════════════════════════════
+    # TREE REUSE
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def advance_root(self, played_move: str) -> bool:
+        """
+        Advance the MCTS tree cache to the subtree rooted at played_move.
+
+        Call this immediately after search() returns, before the next search.
+        Returns True if the subtree was reused, False if the cache was cleared.
+        """
+        return self.mcts_engine.advance_root(played_move)
+
+    def reset_cache(self):
+        """Discard the cached tree. Call at game start or after a game ends."""
+        self.mcts_engine.reset_cache()
+
+    # ═══════════════════════════════════════════════════════════════════════════
     # UTILITY METHODS
     # ═══════════════════════════════════════════════════════════════════════════
-    
+
     def get_policy_vector(self, root, alpha=1.3):
         """
         Extract policy vector from root node.

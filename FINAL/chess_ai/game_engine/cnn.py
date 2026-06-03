@@ -49,13 +49,13 @@ class ChessCNN(nn.Module):
         # Configuration selection
         if upgraded:
             # UPGRADED CONFIG: 256 Channels, 20 Residual Blocks
-            input_channels = 16
+            input_channels = 120
             filters = 256
             num_res_blocks = 20
             se_start_idx = 10  # SE blocks from layer 10 onwards
         else:
             # LEGACY CONFIG: 192 Channels, 10 Residual Blocks
-            input_channels = 16
+            input_channels = 120
             filters = 192
             num_res_blocks = 10
             se_start_idx = 7

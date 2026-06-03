@@ -60,8 +60,25 @@ PYBIND11_MODULE(mcts_engine_cpp, m)
                     Tuple of (best_move: str, policy_vector: np.ndarray)
              )pbdoc")
 
-        .def_readwrite("simulations", &MCTSEngine::simulations, 
+        .def("advance_root", &MCTSEngine::advance_root,
+             py::arg("played_move"),
+             R"pbdoc(
+                Advance the cached MCTS tree to the child for played_move.
+
+                Call this immediately after search() returns, passing the move
+                that was actually played. This discards all sibling subtrees and
+                retains only the relevant subtree for the next search, avoiding
+                redundant computation.
+
+                Returns True if the subtree was reused, False if the cache was
+                cleared (move not found in tree — next search starts fresh).
+             )pbdoc")
+
+        .def("reset_cache", &MCTSEngine::reset_cache,
+             "Discard the cached tree entirely. Call at the start of each game.")
+
+        .def_readwrite("simulations", &MCTSEngine::simulations,
                        "Number of MCTS simulations to run")
-        .def_readwrite("batch_size", &MCTSEngine::batch_size, 
+        .def_readwrite("batch_size", &MCTSEngine::batch_size,
                        "Batch size for parallel leaf evaluation");
 }

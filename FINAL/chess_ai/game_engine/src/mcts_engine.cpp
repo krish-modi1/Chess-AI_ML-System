@@ -196,6 +196,38 @@ void MCTSEngine::clear_tree(std::shared_ptr<MCTSNode>& root) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TREE REUSE HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool MCTSEngine::advance_root(const std::string& played_move) {
+    if (!cached_root) return false;
+
+    auto it = cached_root->children.find(played_move);
+    if (it == cached_root->children.end()) {
+        // Move not in tree — start fresh next search
+        clear_tree(cached_root);
+        cached_root.reset();
+        return false;
+    }
+
+    // Detach the target subtree before clearing the old root
+    auto new_root = it->second;
+    cached_root->children.erase(it);
+    clear_tree(cached_root);
+
+    cached_root = new_root;
+    cached_root->parent.reset();
+    return true;
+}
+
+void MCTSEngine::reset_cache() {
+    if (cached_root) {
+        clear_tree(cached_root);
+        cached_root.reset();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // MAIN SEARCH
 // ═══════════════════════════════════════════════════════════════════════════════
 std::pair<std::string, py::array_t<float>> MCTSEngine::search(
@@ -205,18 +237,25 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::search(
     float temperature,
     uint32_t seed,
     py::function inference_callback) {
-    
+
     rng.seed(seed);
-    
-    auto root = std::make_shared<MCTSNode>(root_state);
-    
-    auto policy_buf = initial_policy.request();
-    std::vector<float> policy_vec((float*)policy_buf.ptr,
-                                   (float*)policy_buf.ptr + policy_buf.size);
-    
-    auto legal_moves = py::cast<std::vector<std::string>>(
-        root_state.attr("legal_moves")());
-    root->expand(legal_moves, policy_vec);
+
+    // ── Tree reuse: if we have a valid cached root, use it ──────────────────
+    std::shared_ptr<MCTSNode> root;
+    if (cached_root && cached_root->is_expanded()) {
+        root = cached_root;
+    } else {
+        // Fresh root
+        root = std::make_shared<MCTSNode>(root_state);
+
+        auto policy_buf = initial_policy.request();
+        std::vector<float> policy_vec((float*)policy_buf.ptr,
+                                      (float*)policy_buf.ptr + policy_buf.size);
+
+        auto legal_moves = py::cast<std::vector<std::string>>(
+            root_state.attr("legal_moves")());
+        root->expand(legal_moves, policy_vec);
+    }
     
     add_dirichlet_noise(root);
     
@@ -331,15 +370,16 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::search(
     }
     
     // ════════════════════════════════════════════════════════════════════════
-    // GET RESULT BEFORE CLEANUP
+    // RESULT + CACHE FOR TREE REUSE
     // ════════════════════════════════════════════════════════════════════════
     std::string best_move = root->best_action();
     auto policy = get_policy_vector(root, temperature);
-    
-    // ════════════════════════════════════════════════════════════════════════
-    // FIX: Explicitly clear tree to free memory
-    // ════════════════════════════════════════════════════════════════════════
-    clear_tree(root);
-    
+
+    // Store root for reuse. Caller must call advance_root(played_move) to
+    // advance the cache to the child that was actually played, discarding
+    // the rest of the tree. If the caller doesn't call advance_root the
+    // cached_root simply stays as-is and will be overwritten next search.
+    cached_root = root;
+
     return {best_move, policy};
 }

@@ -8,6 +8,7 @@ import json
 import random
 import time
 import shutil
+import collections
 from datetime import datetime
 
 # Ensure project root is in path
@@ -61,15 +62,16 @@ class EvalMCTS:
             batch_size=batch_size
         )
     
-    def get_move(self, game, temperature=0.0, use_dirichlet=False):
+    def get_move(self, game, temperature=0.0, use_dirichlet=False, history=None):
         """
         Get best move using MCTS search with the model.
-        
+
         Args:
             game: ChessGame instance
             temperature: 0.0 for greedy, >0 for sampling
             use_dirichlet: Whether to add exploration noise
-        
+            history: list of chess.Board copies, most recent first (up to 7)
+
         Returns:
             Best action (UCI string) or None if search fails
         """
@@ -78,12 +80,21 @@ class EvalMCTS:
                 game,
                 model=self.model,
                 temperature=temperature,
-                use_dirichlet=use_dirichlet
+                use_dirichlet=use_dirichlet,
+                history=history,
             )
             return action
         except Exception as e:
             print(f"[EvalMCTS] ❌ Search error: {e}")
             return None
+
+    def advance_root(self, played_move: str):
+        """Advance the MCTS tree cache to the subtree for played_move."""
+        self.mcts.advance_root(played_move)
+
+    def reset_cache(self):
+        """Discard the cached MCTS tree. Call at the start of each game."""
+        self.mcts.reset_cache()
 
 
 class Arena:
@@ -109,21 +120,41 @@ class Arena:
         cand_is_white = (game_id % 2 == 0)
         cand_label = "Cand" if cand_is_white else "Champ"
         champ_label = "Champ" if cand_is_white else "Cand"
-        
-        # Optional: opening variety like your old version
+        position_history = collections.deque(maxlen=7)
+
+        # Reset tree caches so we never carry state across games
+        self.candidate.reset_cache()
+        self.champion.reset_cache()
+
+        # Opening variety
         legal_moves = list(game.board.legal_moves)
         if legal_moves:
-            game.push(random.choice(legal_moves).uci())
-        
+            opening_move = random.choice(legal_moves).uci()
+            position_history.appendleft(game.board.copy())
+            game.push(opening_move)
+            # Both trees must track the opening move
+            self.candidate.advance_root(opening_move)
+            self.champion.advance_root(opening_move)
+
         while not game.is_over and len(game.moves) < max_moves:
+            history_snapshot = list(position_history)
             if game.board.turn == chess.WHITE:
-                move = self.candidate.get_move(game, temperature=0.0) if cand_is_white else self.champion.get_move(game, temperature=0.0)
+                move = (self.candidate.get_move(game, temperature=0.0, history=history_snapshot)
+                        if cand_is_white else
+                        self.champion.get_move(game, temperature=0.0, history=history_snapshot))
             else:
-                move = self.champion.get_move(game, temperature=0.0) if cand_is_white else self.candidate.get_move(game, temperature=0.0)
-            
+                move = (self.champion.get_move(game, temperature=0.0, history=history_snapshot)
+                        if cand_is_white else
+                        self.candidate.get_move(game, temperature=0.0, history=history_snapshot))
+
             if move is None:
                 break
-            
+
+            # Advance both trees — they both track the same game position
+            self.candidate.advance_root(move)
+            self.champion.advance_root(move)
+
+            position_history.appendleft(game.board.copy())
             game.push(move)
         
         # Determine result
@@ -192,15 +223,22 @@ class StockfishEvaluator:
                 for i in range(num_games):
                     game = ChessGame()
                     agent_is_white = (i % 2 == 0)
-                    
+                    position_history = collections.deque(maxlen=7)
+
+                    # Reset tree cache at game start
+                    agent.reset_cache()
+
                     while not game.is_over and len(game.moves) < max_moves:
                         is_agent = (
                             (game.board.turn == chess.WHITE and agent_is_white) or
                             (game.board.turn == chess.BLACK and not agent_is_white)
                         )
-                        
+
                         if is_agent:
-                            move = agent.get_move(game, temperature=0.0, use_dirichlet=False)
+                            history_snapshot = list(position_history)
+                            move = agent.get_move(game, temperature=0.0,
+                                                  use_dirichlet=False,
+                                                  history=history_snapshot)
                             if move is None:
                                 print(f" [Stockfish] Game {i+1}: Agent move failed, stopping game")
                                 break
@@ -211,9 +249,14 @@ class StockfishEvaluator:
                             except Exception as e:
                                 print(f" [Stockfish] Game {i+1}: Stockfish error: {e}")
                                 break
-                        
+
                         if move is None:
                             break
+
+                        # Advance agent tree regardless of who moved
+                        agent.advance_root(move)
+
+                        position_history.appendleft(game.board.copy())
                         game.push(move)
                     
                     # Forced draw logging

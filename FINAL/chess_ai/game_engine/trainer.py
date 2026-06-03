@@ -2,16 +2,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-# Import AMP for Mixed Precision Training
-from torch.cuda.amp import GradScaler, autocast
-from torch.optim.lr_scheduler import ExponentialLR
+from torch.optim.lr_scheduler import CosineAnnealingLR
 import numpy as np
 import os
 import glob
 import sys
 import time
 import collections
-from tqdm import tqdm
 
 # Ensure we can import from the parent directory
 sys.path.append(os.getcwd())
@@ -20,6 +17,25 @@ from game_engine.cnn import ChessCNN
 
 # Named tuple to store the file boundaries
 FileIndex = collections.namedtuple('FileIndex', ['file_path', 'start_idx', 'end_idx'])
+
+def _build_h_flip_perm():
+    """
+    Policy index permutation for horizontal (left-right) board flip.
+    For each standard move src*64+dst, remaps to the mirrored move
+    where file f becomes (7-f). Underpromotion indices 4096-8191 are
+    left as identity — they're <0.1% of moves and complex to remap.
+    """
+    perm = np.arange(8192, dtype=np.int64)
+    for src in range(64):
+        src_file, src_rank = src % 8, src // 8
+        new_src = (7 - src_file) + src_rank * 8
+        for dst in range(64):
+            dst_file, dst_rank = dst % 8, dst // 8
+            new_dst = (7 - dst_file) + dst_rank * 8
+            perm[new_src * 64 + new_dst] = src * 64 + dst
+    return torch.from_numpy(perm).long()
+
+_H_FLIP_PERM = _build_h_flip_perm()
 
 class ChessDataset(Dataset):
     def __init__(self, data_dir, window_size=20):
@@ -68,8 +84,8 @@ class ChessDataset(Dataset):
                     num_positions = s_shape[0]
 
                     # Validation: Check shapes
-                    if len(s_shape) != 4 or s_shape[1:] != (16, 8, 8):
-                        print(f"Skipping corrupt file {f}: State shape {s_shape} != (16, 8, 8)")
+                    if len(s_shape) != 4 or s_shape[1:] != (120, 8, 8):
+                        print(f"Skipping corrupt file {f}: State shape {s_shape} != (120, 8, 8)")
                         continue
                         
                     if len(p_shape) != 2 or p_shape[1] != 8192:
@@ -127,22 +143,30 @@ class ChessDataset(Dataset):
 
 
     def __getitem__(self, idx):
-        # FIX E: Load data lazily based on index
         data, local_idx = self._load_file_for_index(idx)
-        
+
+        state = data['states'][local_idx]
+        policy = data['policies'][local_idx]
+        value = data['values'][local_idx]
+
+        if torch.rand(1).item() < 0.5:
+            state = torch.flip(state, dims=[2])   # mirror a-file ↔ h-file
+            policy = policy[_H_FLIP_PERM]
+
         return {
-            'state': data['states'][local_idx].float(),
-            'policy': data['policies'][local_idx].float(),
-            'value': data['values'][local_idx].float()
+            'state': state.float(),
+            'policy': policy.float(),
+            'value': value.float()
         }
 
-def train_model(data_path="data/self_play", 
-                input_model_path="game_engine/model/best_model.pth", 
-                output_model_path="game_engine/model/candidate.pth", 
-                epochs=1, 
-                batch_size=256, 
+def train_model(data_path="data/self_play",
+                input_model_path="game_engine/model/best_model.pth",
+                output_model_path="game_engine/model/candidate.pth",
+                epochs=1,
+                batch_size=256,
                 lr=0.0001,
-                window_size=20):
+                window_size=20,
+                total_iterations=1000):
     """
     Trains the model on data from data_path.
     Returns: (avg_policy_loss, avg_value_loss)
@@ -169,19 +193,20 @@ def train_model(data_path="data/self_play",
 
     # 2. Load Model
     model = ChessCNN(upgraded=True).to(device)
-    
-    # Load existing weights (The Champion) to continue training
+    checkpoint = None
+
     if os.path.exists(input_model_path):
         print(f"Loading training base from {input_model_path}")
         try:
-            checkpoint = torch.load(input_model_path, map_location=device)
-            # Robust Dictionary Loading
-            if 'model_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['model_state_dict'])
-            elif 'state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['state_dict'])
+            raw = torch.load(input_model_path, map_location=device)
+            if 'model_state_dict' in raw:
+                model.load_state_dict(raw['model_state_dict'])
+                checkpoint = raw
+            elif 'state_dict' in raw:
+                model.load_state_dict(raw['state_dict'])
+                checkpoint = raw
             else:
-                model.load_state_dict(checkpoint)
+                model.load_state_dict(raw)  # legacy bare state dict — no optimizer/scheduler to restore
         except Exception as e:
             print(f"Error loading model, starting fresh: {e}")
     else:
@@ -190,14 +215,21 @@ def train_model(data_path="data/self_play",
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-3)
 
-    # Add exponential LR decay for controlled convergence
-    scheduler = ExponentialLR(optimizer, gamma=0.7)  # Halves LR each epoch
+    total_steps = total_iterations * len(dataloader)
+    scheduler = CosineAnnealingLR(optimizer, T_max=max(total_steps, 1), eta_min=1e-6)
+
+    if checkpoint is not None:
+        if 'optimizer_state_dict' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if 'scheduler_state_dict' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            print(f"Scheduler restored: step {scheduler.last_epoch}/{scheduler.T_max} | LR: {scheduler.get_last_lr()[0]:.2e}")
     
     # 3. Loss Functions
     mse_loss = nn.MSELoss()
     
     # --- AMP Scaler ---
-    scaler = GradScaler()
+    scaler = torch.amp.GradScaler(device.type)
 
     last_p_loss = 0.0
     last_v_loss = 0.0
@@ -218,7 +250,7 @@ def train_model(data_path="data/self_play",
             optimizer.zero_grad()
             
             # --- Mixed Precision Forward Pass ---
-            with autocast():
+            with torch.amp.autocast(device_type=device.type):
                 # cnn returns (policy_logits, value)
                 pred_policies, pred_values = model(states)
                 
@@ -241,6 +273,7 @@ def train_model(data_path="data/self_play",
 
             scaler.step(optimizer)
             scaler.update()
+            scheduler.step()
 
             total_loss += loss.item()
             p_loss_total += p_loss.item()
@@ -264,18 +297,15 @@ def train_model(data_path="data/self_play",
             last_p_loss = p_loss_total / batch_count
             last_v_loss = v_loss_total / batch_count
 
-            print(f"Epoch {epoch+1}/{epochs} | Loss: {total_loss/batch_count:.4f} (Pol: {last_p_loss:.4f} Val: {last_v_loss:.4f})")
-
-            # Step LR scheduler (aggressive decay)
-            if epoch < 3:  # Only decay for first 2 epochs
-                scheduler.step()
-                print(f"LR decayed to: {scheduler.get_last_lr()[0]:.6f}")
+            current_lr = scheduler.get_last_lr()[0]
+            print(f"Epoch {epoch+1}/{epochs} | Loss: {total_loss/batch_count:.4f} (Pol: {last_p_loss:.4f} Val: {last_v_loss:.4f}) | LR: {current_lr:.2e}")
 
     # 5. Save Model
     os.makedirs(os.path.dirname(output_model_path), exist_ok=True)
     torch.save({
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
     }, output_model_path)
     print(f"New model saved to {output_model_path}")
     

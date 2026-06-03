@@ -100,9 +100,13 @@ public:
     int simulations;
     int batch_size;
     std::mt19937 rng;
-    
+
+    // Tree reuse: cached root persists between search() calls.
+    // Call advance_root(move) after each move to advance the cached subtree.
+    std::shared_ptr<MCTSNode> cached_root;
+
     MCTSEngine(int sims = 800, int bs = 8) : simulations(sims), batch_size(bs) {}
-    
+
     std::pair<std::string, py::array_t<float>> search(
         py::object root_state,
         const py::array_t<float>& initial_policy,
@@ -111,19 +115,23 @@ public:
         uint32_t seed,
         py::function inference_callback
     );
-    
+
+    // Advance cached_root to the child for played_move, discarding siblings.
+    // Returns true if the subtree was reused, false if cache was cleared.
+    bool advance_root(const std::string& played_move);
+
+    // Discard the cached tree entirely (call at game start or after illegal move).
+    void reset_cache();
+
 private:
     void backpropagate(const std::vector<std::shared_ptr<MCTSNode>>& path,
                       float value, float leaf_turn_player);
-    
+
     py::array_t<float> get_policy_vector(
         const std::shared_ptr<MCTSNode>& root,
         float temperature = 1.0f);
-    
+
     void add_dirichlet_noise(std::shared_ptr<MCTSNode>& root);
-    
-    // ═══════════════════════════════════════════════════════════════════
-    // FIX 3: Explicit tree cleanup helper
-    // ═══════════════════════════════════════════════════════════════════
+
     void clear_tree(std::shared_ptr<MCTSNode>& root);
 };

@@ -9,7 +9,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native")
 # Find Python and pybind11
 # First try finding pybind11 via CMake config
 execute_process(
-    COMMAND python -c "import pybind11; import os; print(os.path.dirname(pybind11.__file__))"
+    COMMAND python3 -c "import pybind11; import os; print(os.path.dirname(pybind11.__file__))"
     OUTPUT_VARIABLE PYBIND11_PATH
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
