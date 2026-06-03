@@ -6,8 +6,6 @@ import chess.engine
 import chess.pgn
 import json
 import random
-import time
-import shutil
 import collections
 import multiprocessing as mp
 from datetime import datetime
