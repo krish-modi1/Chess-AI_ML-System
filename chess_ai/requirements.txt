@@ -1,9 +1,9 @@
 --extra-index-url https://download.pytorch.org/whl/cu124
 
-# Core deep learning (CUDA 12.4 wheel; compatible with CUDA 12.9.1 on CARC)
+# Core deep learning (CUDA 12.4 wheel)
 torch>=2.3.0
 
-# Chess library
+# Chess
 python-chess>=1.999
 
 # Numeric
@@ -13,7 +13,7 @@ numpy>=1.24.0
 tqdm>=4.65.0
 psutil>=5.9.0
 
-# C++ bindings (pybind11 cmake helpers required for build step)
+# C++ bindings (pybind11 cmake helpers required at build time)
 pybind11>=2.11.0
 
 # Visualization
@@ -22,3 +22,6 @@ matplotlib>=3.7.0
 # Download helpers (pull model checkpoint from Google Drive)
 gdown>=4.7.1
 requests>=2.31.0
+
+# Lichess pretraining (decompress .pgn.zst database files)
+zstandard>=0.21.0
