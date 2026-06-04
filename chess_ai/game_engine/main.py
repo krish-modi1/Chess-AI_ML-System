@@ -205,24 +205,15 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
             result = "1/2-1/2"
         else:
             result = game.result
-        
-        final_winner = 0.0
-        if result == "1-0":
-            final_winner = 1.0
-        elif result == "0-1":
-            final_winner = 0.0
-        elif result == "1/2-1/2":
-            final_winner = 0.5
-        
+
+        # WDL class indices: 0=win, 1=draw, 2=loss (from perspective of player to move)
         values = []
-        for g in game_data:
-            if final_winner == 0.5:
-                penalty = FORCED_DRAW_PENALTY if forced_draw else DRAW_PENALTY
-                values.append(penalty)
-            elif g['turn'] == final_winner:
-                values.append(1.0)
-            else:
-                values.append(-1.0)
+        if result == "1/2-1/2":
+            values = [1] * len(game_data)
+        else:
+            winner_turn = 1.0 if result == "1-0" else 0.0
+            for g in game_data:
+                values.append(0 if g['turn'] == winner_turn else 2)
         
         timestamp = int(time.time())
         filename = f"{iter_dir}/w{worker_id}_g{i}_{timestamp}.npz"
@@ -230,7 +221,7 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
         np.savez_compressed(filename,
                           states=np.array([g["state"] for g in game_data]),
                           policies=np.array([g["policy"] for g in game_data]),
-                          values=np.array(values, dtype=np.float32))
+                          values=np.array(values, dtype=np.int8))
 
         print(f" [Worker {worker_id}] Finished Game {i+1} in {time.time()-game_start:.1f}s | Total Moves {len(game.moves)} | Result {result}")
         
@@ -292,14 +283,6 @@ MAX_MOVES_PER_GAME = int(os.environ.get("MAX_MOVES_PER_GAME", 800))
 EVAL_MAX_MOVES_PER_GAME = int(os.environ.get("EVAL_MAX_MOVES_PER_GAME", 800)) 
 
 current_iter = get_start_iteration(DATA_DIR) - 1
-if current_iter < 10:
-    DRAW_PENALTY = -0.1
-elif current_iter < 20:
-    DRAW_PENALTY = -0.2
-else:
-    DRAW_PENALTY = -0.25        
-
-FORCED_DRAW_PENALTY = 0.0
 
 # Training
 TRAIN_EPOCHS = 4 

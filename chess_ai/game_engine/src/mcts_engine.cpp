@@ -3,38 +3,39 @@
 #include <algorithm>
 #include <numeric>
 
-// === select_child() ===
+// === select_child() — unchanged ===
 std::pair<std::string, std::shared_ptr<MCTSNode>> MCTSNode::select_child() {
     float best_score = -1e9f;
     std::string best_action;
     std::shared_ptr<MCTSNode> best_child;
-    
+
     float parent_visits = visit_count + virtual_loss;
     float cpuct = CPUCT_INIT + std::log((parent_visits + CPUCT_BASE) / CPUCT_BASE);
     float sqrt_parent_visits = std::sqrt(std::max(1.0f, parent_visits));
-    
+
     for (auto& [action, child] : children) {
         float child_visits = child->visit_count + child->virtual_loss;
         float q_value = -child->value();
         float u_value = cpuct * child->prior * sqrt_parent_visits / (1.0f + child_visits);
         float score = q_value + u_value;
-        
+
         if (score > best_score) {
             best_score = score;
             best_action = action;
             best_child = child;
         }
     }
-    
+
     return {best_action, best_child};
 }
 
-// === expand() ===
+// === expand() — pure C++, no Python copies ===
 void MCTSNode::expand(const std::vector<std::string>& valid_moves,
                      const std::vector<float>& policy_logits) {
+    if (is_expanded()) return;   // guard: second call in same batch is a no-op
     std::unordered_map<std::string, float> move_probs;
     float policy_sum = 0.0f;
-    
+
     for (const auto& move_str : valid_moves) {
         int idx = move_to_index(move_str);
         float logit = (idx < (int)policy_logits.size()) ? policy_logits[idx] : -10.0f;
@@ -42,47 +43,46 @@ void MCTSNode::expand(const std::vector<std::string>& valid_moves,
         move_probs[move_str] = prob;
         policy_sum += prob;
     }
-    
+
     for (const auto& move : valid_moves) {
-        float normalized_prior;
-        if (policy_sum > 0) {
-            normalized_prior = move_probs[move] / policy_sum;
-        } else {
-            normalized_prior = 1.0f / valid_moves.size();
-        }
-        
-        py::object next_state = py_state.attr("copy")();
-        next_state.attr("push")(move);
-        auto child = std::make_shared<MCTSNode>(next_state, shared_from_this(), normalized_prior);
+        float normalized_prior = (policy_sum > 0) ?
+            move_probs[move] / policy_sum :
+            1.0f / valid_moves.size();
+
+        ChessBoard child_board = board.copy();   // pure C++ — no GIL crossing
+        child_board.push(move);                  // pure C++
+
+        auto child = std::make_shared<MCTSNode>(
+            std::move(child_board), shared_from_this(), normalized_prior);
         children[move] = child;
     }
 }
 
-// === best_action() ===
+// === best_action() — unchanged ===
 std::string MCTSNode::best_action() const {
     int most_visits = -1;
     std::string best = "";
-    
+
     for (const auto& [action, child] : children) {
         if (child->visit_count > most_visits) {
             most_visits = child->visit_count;
             best = action;
         }
     }
-    
+
     return best;
 }
 
-// === backpropagate() ===
+// === backpropagate() — C++ turn_player, no GIL crossing ===
 void MCTSEngine::backpropagate(const std::vector<std::shared_ptr<MCTSNode>>& path,
                                float value, float leaf_turn_player) {
     auto leaf = path.back();
     leaf->virtual_loss -= VIRTUAL_LOSS;
     leaf->value_sum += VIRTUAL_LOSS;
-    
+
     for (auto& node : path) {
         node->visit_count += 1;
-        float turn_val = py::cast<float>(node->py_state.attr("turn_player"));
+        float turn_val = node->board.turn_player();   // pure C++ — no GIL crossing
         if (turn_val == leaf_turn_player) {
             node->value_sum += value;
         } else {
@@ -91,26 +91,24 @@ void MCTSEngine::backpropagate(const std::vector<std::shared_ptr<MCTSNode>>& pat
     }
 }
 
-// === add_dirichlet_noise() ===
+// === add_dirichlet_noise() — unchanged ===
 void MCTSEngine::add_dirichlet_noise(std::shared_ptr<MCTSNode>& root) {
     if (root->children.empty()) return;
-    
+
     size_t num_actions = root->children.size();
     std::gamma_distribution<float> gamma(DIRICHLET_ALPHA, 1.0f);
-    
+
     std::vector<float> noise(num_actions);
     float noise_sum = 0.0f;
     for (size_t i = 0; i < num_actions; i++) {
         noise[i] = gamma(rng);
         noise_sum += noise[i];
     }
-    
+
     if (noise_sum > 0) {
-        for (auto& n : noise) {
-            n /= noise_sum;
-        }
+        for (auto& n : noise) n /= noise_sum;
     }
-    
+
     size_t i = 0;
     for (auto& [action, child] : root->children) {
         child->prior = (1.0f - DIRICHLET_FRAC) * child->prior + DIRICHLET_FRAC * noise[i];
@@ -118,99 +116,76 @@ void MCTSEngine::add_dirichlet_noise(std::shared_ptr<MCTSNode>& root) {
     }
 }
 
-// === get_policy_vector() ===
+// === get_policy_vector() — unchanged ===
 py::array_t<float> MCTSEngine::get_policy_vector(const std::shared_ptr<MCTSNode>& root, float temperature) {
-    std::vector<float> policy(8192, 0.0f);
+    std::vector<float> policy(4672, 0.0f);
     std::unordered_map<int, float> visits;
-    
+
     for (const auto& [action_uci, child] : root->children) {
         int idx = move_to_index(action_uci);
-        if (idx < 8192) {
-            visits[idx] = (float)child->visit_count;
-        }
+        if (idx < 4672) visits[idx] = (float)child->visit_count;
     }
-    
-    if (visits.empty()) {
-        return py::array_t<float>(8192, policy.data());
-    }
-    
+
+    if (visits.empty()) return py::array_t<float>(4672, policy.data());
+
     std::vector<float> counts;
     std::vector<int> indices;
     for (const auto& [idx, v] : visits) {
         indices.push_back(idx);
         counts.push_back(v);
     }
-    
+
     float total = 0.0f;
     for (auto& c : counts) {
-        float exponent = 1.3f;
-        c = std::pow(c, exponent);
+        c = std::pow(c, 1.3f);
         total += c;
     }
-    
+
     if (total > 0) {
         for (size_t i = 0; i < indices.size(); i++) {
             policy[indices[i]] = counts[i] / total;
         }
     }
-    
-    return py::array_t<float>(8192, policy.data());
+
+    return py::array_t<float>(4672, policy.data());
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// FIX 3: Explicit tree cleanup - breaks parent references and clears children
-// This ensures proper destruction even if there are lingering shared_ptrs
-// ═══════════════════════════════════════════════════════════════════════════════
+// === clear_tree() — ChessBoard destructs automatically, no py_state release ===
 void MCTSEngine::clear_tree(std::shared_ptr<MCTSNode>& root) {
     if (!root) return;
-    
-    // Use iterative approach to avoid stack overflow on deep trees
+
     std::vector<std::shared_ptr<MCTSNode>> nodes_to_clear;
     nodes_to_clear.push_back(root);
-    
+
     while (!nodes_to_clear.empty()) {
         auto node = nodes_to_clear.back();
         nodes_to_clear.pop_back();
-        
+
         if (!node) continue;
-        
-        // Queue all children for clearing
+
         for (auto& [action, child] : node->children) {
-            if (child) {
-                nodes_to_clear.push_back(child);
-            }
+            if (child) nodes_to_clear.push_back(child);
         }
-        
-        // Clear this node's children map (releases shared_ptrs)
+
         node->children.clear();
-        
-        // Reset parent weak_ptr
         node->parent.reset();
-        
-        // Release Python object
-        node->py_state = py::none();
+        // ChessBoard member 'board' destructs automatically with the node
     }
-    
-    // Finally reset the root itself
+
     root.reset();
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// TREE REUSE HELPERS
-// ═══════════════════════════════════════════════════════════════════════════════
-
+// === advance_root() — unchanged ===
 bool MCTSEngine::advance_root(const std::string& played_move) {
     if (!cached_root) return false;
 
     auto it = cached_root->children.find(played_move);
     if (it == cached_root->children.end()) {
-        // Move not in tree — start fresh next search
         clear_tree(cached_root);
         cached_root.reset();
         return false;
     }
 
-    // Detach the target subtree before clearing the old root
     auto new_root = it->second;
     cached_root->children.erase(it);
     clear_tree(cached_root);
@@ -220,6 +195,7 @@ bool MCTSEngine::advance_root(const std::string& played_move) {
     return true;
 }
 
+// === reset_cache() — unchanged ===
 void MCTSEngine::reset_cache() {
     if (cached_root) {
         clear_tree(cached_root);
@@ -227,11 +203,9 @@ void MCTSEngine::reset_cache() {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// MAIN SEARCH
-// ═══════════════════════════════════════════════════════════════════════════════
+// === search() — root_state is ChessBoard; all tree ops are pure C++ ===
 std::pair<std::string, py::array_t<float>> MCTSEngine::search(
-    py::object root_state,
+    ChessBoard root_state,
     const py::array_t<float>& initial_policy,
     float initial_value,
     float temperature,
@@ -240,54 +214,45 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::search(
 
     rng.seed(seed);
 
-    // ── Tree reuse: if we have a valid cached root, use it ──────────────────
     std::shared_ptr<MCTSNode> root;
     if (cached_root && cached_root->is_expanded()) {
         root = cached_root;
     } else {
-        // Fresh root
-        root = std::make_shared<MCTSNode>(root_state);
+        root = std::make_shared<MCTSNode>(std::move(root_state));
 
         auto policy_buf = initial_policy.request();
         std::vector<float> policy_vec((float*)policy_buf.ptr,
                                       (float*)policy_buf.ptr + policy_buf.size);
 
-        auto legal_moves = py::cast<std::vector<std::string>>(
-            root_state.attr("legal_moves")());
+        const auto& legal_moves = root->board.legal_moves();   // pure C++
         root->expand(legal_moves, policy_vec);
     }
-    
+
     add_dirichlet_noise(root);
-    
+
     int num_iterations = std::max(1, simulations / batch_size);
-    
-    // ════════════════════════════════════════════════════════════════════════
-    // MAIN MCTS LOOP
-    // ════════════════════════════════════════════════════════════════════════
+
     for (int iter = 0; iter < num_iterations; iter++) {
-        
+
         std::vector<std::shared_ptr<MCTSNode>> leaves;
         std::vector<std::vector<std::shared_ptr<MCTSNode>>> paths;
         std::vector<py::object> leaf_states;
-        
-        // Reserve space to reduce reallocations
+
         leaves.reserve(batch_size);
         paths.reserve(batch_size);
         leaf_states.reserve(batch_size);
-        
-        // ════════════════════════════════════════════════════════════════════
-        // SELECTION PHASE
-        // ════════════════════════════════════════════════════════════════════
+
+        // ── SELECTION ────────────────────────────────────────────────────────
         for (int i = 0; i < batch_size; i++) {
             auto node = root;
             std::vector<std::shared_ptr<MCTSNode>> path;
-            path.reserve(64);  // Typical max depth
+            path.reserve(64);
             path.push_back(node);
-            
+
             while (node->is_expanded()) {
                 std::uniform_real_distribution<float> epsilon_dist(0.0f, 1.0f);
                 constexpr float epsilon = 0.05f;
-                
+
                 if (epsilon_dist(rng) < epsilon && node->children.size() > 1) {
                     std::uniform_int_distribution<int> child_dist(0, node->children.size() - 1);
                     int random_idx = child_dist(rng);
@@ -301,84 +266,68 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::search(
                     node = next_node;
                 }
             }
-            
+
             node->virtual_loss += VIRTUAL_LOSS;
             node->value_sum -= VIRTUAL_LOSS;
-            
-            bool is_over = py::cast<bool>(node->py_state.attr("is_over"));
-            if (is_over) {
-                float reward = py::cast<float>(
-                    node->py_state.attr("get_reward_for_turn")(
-                        node->py_state.attr("turn_player")));
-                backpropagate(path, reward, py::cast<float>(
-                    node->py_state.attr("turn_player")));
+
+            if (node->board.is_over()) {                       // pure C++ — no GIL crossing
+                float tp = node->board.turn_player();
+                float reward = node->board.get_reward_for_turn(tp);
+                backpropagate(path, reward, tp);
             } else {
                 leaves.push_back(node);
                 paths.push_back(std::move(path));
-                leaf_states.push_back(node->py_state);
+                // py::cast creates a Python-wrapped copy of ChessBoard for the callback.
+                // Copy is intentional — callback must not mutate MCTS tree nodes.
+                leaf_states.push_back(py::cast(node->board));
             }
         }
-        
+
         if (leaves.empty()) continue;
-        
-        // ════════════════════════════════════════════════════════════════════
-        // INFERENCE PHASE
-        // ════════════════════════════════════════════════════════════════════
+
+        // ── INFERENCE (Python callback — GPU inference must cross into Python) ──
         py::list py_leaf_states;
         for (auto& state : leaf_states) {
             py_leaf_states.append(state);
         }
-        
+
         py::object result = inference_callback(py_leaf_states);
-        
+
         py::array_t<float> policies_array = result.attr("__getitem__")(0).cast<py::array_t<float>>();
-        py::array_t<float> values_array = result.attr("__getitem__")(1).cast<py::array_t<float>>();
-        
+        py::array_t<float> values_array   = result.attr("__getitem__")(1).cast<py::array_t<float>>();
+
         auto policies_buf = policies_array.request();
-        auto values_buf = values_array.request();
-        
+        auto values_buf   = values_array.request();
+
         float* policies_ptr = (float*)policies_buf.ptr;
-        float* values_ptr = (float*)values_buf.ptr;
-        
-        // ════════════════════════════════════════════════════════════════════
-        // EXPANSION & BACKPROPAGATION PHASE
-        // ════════════════════════════════════════════════════════════════════
+        float* values_ptr   = (float*)values_buf.ptr;
+
+        // ── EXPANSION & BACKPROPAGATION ──────────────────────────────────────
         for (size_t i = 0; i < leaves.size(); i++) {
             auto node = leaves[i];
             auto& path = paths[i];
-            
-            auto next_legal = py::cast<std::vector<std::string>>(
-                node->py_state.attr("legal_moves")());
-            
-            std::vector<float> leaf_policy(8192);
-            for (int j = 0; j < 8192; j++) {
-                leaf_policy[j] = policies_ptr[i * 8192 + j];
+
+            const auto& next_legal = node->board.legal_moves();   // pure C++
+
+            std::vector<float> leaf_policy(4672);
+            for (int j = 0; j < 4672; j++) {
+                leaf_policy[j] = policies_ptr[i * 4672 + j];
             }
-            
+
             node->expand(next_legal, leaf_policy);
-            
+
             float leaf_value = values_ptr[i];
-            
-            backpropagate(path, leaf_value, py::cast<float>(
-                node->py_state.attr("turn_player")));
+            float tp = node->board.turn_player();                  // pure C++
+            backpropagate(path, leaf_value, tp);
         }
-        
-        // Clear temporary vectors explicitly
+
         leaves.clear();
         paths.clear();
         leaf_states.clear();
     }
-    
-    // ════════════════════════════════════════════════════════════════════════
-    // RESULT + CACHE FOR TREE REUSE
-    // ════════════════════════════════════════════════════════════════════════
+
     std::string best_move = root->best_action();
     auto policy = get_policy_vector(root, temperature);
-
-    // Store root for reuse. Caller must call advance_root(played_move) to
-    // advance the cache to the child that was actually played, discarding
-    // the rest of the tree. If the caller doesn't call advance_root the
-    // cached_root simply stays as-is and will be overwritten next search.
     cached_root = root;
 
     return {best_move, policy};

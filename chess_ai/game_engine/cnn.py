@@ -68,7 +68,7 @@ class ChessCNN(nn.Module):
             nn.BatchNorm2d(32),
             Mish(),
             nn.Flatten(),
-            nn.Linear(32*8*8, 8192)
+            nn.Linear(32*8*8, 4672)
         )
 
         self.value_head = nn.Sequential(
@@ -78,8 +78,7 @@ class ChessCNN(nn.Module):
             nn.Flatten(),
             nn.Linear(64, 256),
             Mish(),
-            nn.Linear(256, 1),
-            nn.Tanh()
+            nn.Linear(256, 3)
         )
 
     def forward(self, x):

@@ -25,6 +25,7 @@ find_package(pybind11 CONFIG REQUIRED)
 
 # Create the shared library module
 pybind11_add_module(mcts_engine_cpp
+    src/chess_board.cpp
     src/mcts_engine.cpp
     src/python_bridge.cpp
 )
@@ -37,7 +38,16 @@ if(MSVC)
     target_compile_options(mcts_engine_cpp PRIVATE /O2)
 else()
     target_compile_options(mcts_engine_cpp PRIVATE -O3 -march=native -ffast-math)
+    # Static libstdc++ so the .so loads in any Python env (avoids GLIBCXX version mismatch)
+    target_link_options(mcts_engine_cpp PRIVATE -static-libstdc++ -static-libgcc)
 endif()
+
+# Auto-copy .so to game_engine/ after every build so it's immediately importable
+add_custom_command(TARGET mcts_engine_cpp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+        $<TARGET_FILE:mcts_engine_cpp>
+        ${CMAKE_SOURCE_DIR}/$<TARGET_FILE_NAME:mcts_engine_cpp>
+)
 
 # Installation
 install(TARGETS mcts_engine_cpp LIBRARY DESTINATION game_engine)

@@ -21,18 +21,40 @@ FileIndex = collections.namedtuple('FileIndex', ['file_path', 'start_idx', 'end_
 def _build_h_flip_perm():
     """
     Policy index permutation for horizontal (left-right) board flip.
-    For each standard move src*64+dst, remaps to the mirrored move
-    where file f becomes (7-f). Underpromotion indices 4096-8191 are
-    left as identity — they're <0.1% of moves and complex to remap.
+    AlphaZero 4672 encoding: 64 src squares × 73 planes.
+    Mirroring reverses file direction, which maps:
+      Queen dirs: N↔N, NE↔NW, E↔W, SE↔SW, S↔S (same distance)
+      Knight dirs: each L-shape mirrors its file delta
+      Underpromotion dirs: left(df<0) ↔ right(df>0)
     """
-    perm = np.arange(8192, dtype=np.int64)
+    perm = np.arange(4672, dtype=np.int64)
+    # Queen direction flip table (dir → mirrored dir)
+    dir_flip = [0, 7, 6, 5, 4, 3, 2, 1]
+    # Knight direction flip: (df,dr) → (-df,dr)
+    # 0=(+1,+2)→7=(-1,+2), 1=(+2,+1)→6=(-2,+1), 2=(+2,-1)→5=(-2,-1), 3=(+1,-2)→4=(-1,-2)
+    knight_flip = [7, 6, 5, 4, 3, 2, 1, 0]
+    # Underpromotion dir flip: NW(0,df=-1) ↔ NE(2,df=+1), N(1) stays
+    underprom_dir_flip = [2, 1, 0]
+
     for src in range(64):
-        src_file, src_rank = src % 8, src // 8
+        src_file = src % 8
+        src_rank = src // 8
         new_src = (7 - src_file) + src_rank * 8
-        for dst in range(64):
-            dst_file, dst_rank = dst % 8, dst // 8
-            new_dst = (7 - dst_file) + dst_rank * 8
-            perm[new_src * 64 + new_dst] = src * 64 + dst
+
+        for plane in range(73):
+            if plane < 56:  # Queen-like move
+                orig_dir = plane // 7
+                dist     = plane % 7
+                new_plane = dir_flip[orig_dir] * 7 + dist
+            elif plane < 64:  # Knight move
+                new_plane = 56 + knight_flip[plane - 56]
+            else:  # Underpromotion
+                idx = plane - 64
+                udir, piece = idx // 3, idx % 3
+                new_plane = 64 + underprom_dir_flip[udir] * 3 + piece
+
+            perm[new_src * 73 + new_plane] = src * 73 + plane
+
     return torch.from_numpy(perm).long()
 
 _H_FLIP_PERM = _build_h_flip_perm()
@@ -88,7 +110,7 @@ class ChessDataset(Dataset):
                         print(f"Skipping corrupt file {f}: State shape {s_shape} != (120, 8, 8)")
                         continue
                         
-                    if len(p_shape) != 2 or p_shape[1] != 8192:
+                    if len(p_shape) != 2 or p_shape[1] != 4672:
                         print(f"Skipping corrupt file {f}: Policy shape {p_shape}")
                         continue
                     
@@ -135,7 +157,7 @@ class ChessDataset(Dataset):
             self._current_data = {
                 'states': torch.from_numpy(data['states']),
                 'policies': torch.from_numpy(data['policies']),
-                'values': torch.from_numpy(data['values']),
+                'values': torch.from_numpy(data['values'].astype(np.int64)),
             }
             self._current_file = target_file
             
@@ -156,7 +178,7 @@ class ChessDataset(Dataset):
         return {
             'state': state.float(),
             'policy': policy.float(),
-            'value': value.float()
+            'value': value,  # int64 class index: 0=win, 1=draw, 2=loss
         }
 
 def train_model(data_path="data/self_play",
@@ -226,7 +248,7 @@ def train_model(data_path="data/self_play",
             print(f"Scheduler restored: step {scheduler.last_epoch}/{scheduler.T_max} | LR: {scheduler.get_last_lr()[0]:.2e}")
     
     # 3. Loss Functions
-    mse_loss = nn.MSELoss()
+    ce_value_loss = nn.CrossEntropyLoss()
     
     # --- AMP Scaler ---
     scaler = torch.amp.GradScaler(device.type)
@@ -254,8 +276,8 @@ def train_model(data_path="data/self_play",
                 # cnn returns (policy_logits, value)
                 pred_policies, pred_values = model(states)
                 
-                # --- Value Loss (MSE) ---
-                v_loss = mse_loss(pred_values.squeeze(), target_values)
+                # --- Value Loss (CrossEntropy, WDL: 0=win,1=draw,2=loss) ---
+                v_loss = ce_value_loss(pred_values, target_values)
                 
                 # --- Policy Loss (Cross Entropy) ---
                 log_probs = torch.log_softmax(pred_policies, dim=1)

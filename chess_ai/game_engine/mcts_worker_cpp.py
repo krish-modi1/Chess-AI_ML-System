@@ -24,19 +24,31 @@ sys.path.append(os.getcwd())
 import mcts_engine_cpp
 
 
+def _chess_game_to_cpp_board(chess_game):
+    """Build ChessBoard by replaying all moves from the starting position.
+
+    Creates from FEN alone would reset the chess-library's repetition history.
+    Replaying preserves it, which matters for isRepetition() in to_tensor().
+    """
+    cpp_board = mcts_engine_cpp.ChessBoard()
+    for move_uci in chess_game.moves:
+        cpp_board.push(move_uci)
+    return cpp_board
+
+
 class MCTSWorker:
     """
     MCTS Worker using C++ backend with callback-based batched inference.
-    
+
     Architecture:
     ─────────────────────────────────────────────────────────────────────
-    
+
     OLD (Broken):
         Python → C++ search(root_state, root_policy, root_value)
                       │
                       └─► C++ runs entire MCTS with uniform_policy
                           (NO neural network for leaves!)
-    
+
     NEW (Fixed):
         Python → C++ search(root_state, root_policy, root_value, callback)
                       │
@@ -49,10 +61,10 @@ class MCTSWorker:
                       │         ◄──────────┘ returns (policies, values)
                       │
                       └─► C++ Expansion & Backprop with REAL NN values
-    
+
     ─────────────────────────────────────────────────────────────────────
     """
-    
+
     def __init__(self, worker_id, input_queue, output_queue, simulations=800, batch_size=8, seed=0):
         """
         Initialize MCTSWorker with C++ backend.
@@ -73,9 +85,9 @@ class MCTSWorker:
         self.cpu = 1.0
         self.seed = seed
 
-        # History for current game — list of chess.Board copies, most recent first.
+        # History for current game — list of ChessBoard copies, most recent first.
         # Set by search() on each call; consumed by _batch_inference_callback.
-        self._current_history = []
+        self._cpp_history = []
 
         # Create C++ MCTS engine instance
         self.mcts_engine = mcts_engine_cpp.MCTSEngine(simulations, batch_size)
@@ -83,16 +95,16 @@ class MCTSWorker:
     # ═══════════════════════════════════════════════════════════════════════════
     # NON-BLOCKING QUEUE POLLING
     # ═══════════════════════════════════════════════════════════════════════════
-    
+
     def _get_inference_result(self, timeout_ms=60000):
         """
         Poll for inference results with non-blocking timeout.
-        
+
         This prevents workers from blocking indefinitely and allows
         the queue to fill properly with batched requests.
         """
         start_time = time.time()
-        
+
         while True:
             try:
                 # Poll with 1ms timeout
@@ -108,217 +120,167 @@ class MCTSWorker:
     # ═══════════════════════════════════════════════════════════════════════════
     # INFERENCE CALLBACK - Called by C++ during MCTS search
     # ═══════════════════════════════════════════════════════════════════════════
-    
+
     def _batch_inference_callback(self, leaf_states):
         """
-        Callback function passed to C++ for batched neural network inference.
-        
-        This is THE KEY FIX for proper MCTS:
-        - C++ calls this with a batch of leaf positions
-        - We convert states to tensors
-        - We send to GPU inference server
-        - We return (policies, values) for C++ to use in expansion
-        
-        Args:
-            leaf_states: List of ChessGame objects (leaf positions from C++)
-        
-        Returns:
-            Tuple of (policies, values):
-                policies: np.ndarray shape (batch_size, 8192)
-                values: np.ndarray shape (batch_size,)
+        Called by C++ with a batch of leaf positions.
+        leaf_states is List[mcts_engine_cpp.ChessBoard] (C++ objects exposed to Python).
+        Uses self._cpp_history set at search() start (frozen at root time) — leaf nodes at
+        depth N use root-era history, which is an approximation that worsens with tree depth
+        but matches the behavior of the previous Python implementation.
         """
         batch_size = len(leaf_states)
 
         if batch_size == 0:
             return (
-                np.zeros((0, 8192), dtype=np.float32),
+                np.zeros((0, 4672), dtype=np.float32),
                 np.zeros((0,), dtype=np.float32)
             )
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Step 1: Convert ChessGame states to tensor batch (with history)
-        # All leaves share the same game history up to the root — standard
-        # approximation for history-stacked MCTS.
-        # ─────────────────────────────────────────────────────────────────────
-        tensors = [state.to_tensor(self._current_history) for state in leaf_states]
-
-        # Stack into batch tensor: shape (batch_size, 120, 8, 8)
+        tensors = [state.to_tensor(self._cpp_history) for state in leaf_states]
         batch_tensor = torch.from_numpy(np.array(tensors))
-        
-        # ─────────────────────────────────────────────────────────────────────
-        # Step 2: Send to GPU inference server
-        # ─────────────────────────────────────────────────────────────────────
+
         self.input_queue.put((self.worker_id, batch_tensor))
-        
-        # ─────────────────────────────────────────────────────────────────────
-        # Step 3: Wait for results (non-blocking poll)
-        # ─────────────────────────────────────────────────────────────────────
+
         try:
             policies, values = self._get_inference_result(timeout_ms=60000)
         except TimeoutError:
             print(f"[Worker {self.worker_id}] ❌ Inference timeout in callback")
-            # Return uniform policy and neutral value as fallback
             return (
-                np.zeros((batch_size, 8192), dtype=np.float32),
+                np.zeros((batch_size, 4672), dtype=np.float32),
                 np.zeros((batch_size,), dtype=np.float32)
             )
-        
-        # ─────────────────────────────────────────────────────────────────────
-        # Step 4: Convert results to numpy arrays for C++
-        # ─────────────────────────────────────────────────────────────────────
-        
-        # Handle policies
+
         if isinstance(policies, torch.Tensor):
             policies_np = policies.detach().cpu().numpy()
         else:
             policies_np = np.array(policies, dtype=np.float32)
-        
-        # Ensure 2D shape (batch_size, 8192)
+
         if policies_np.ndim == 1:
             policies_np = policies_np.reshape(1, -1)
-        
-        # Handle values
+
         if isinstance(values, torch.Tensor):
-            values_np = values.detach().cpu().numpy().flatten()
+            v = values.detach().cpu()
         else:
-            values_np = np.array(values, dtype=np.float32).flatten()
-        
-        return (policies_np, values_np)
+            v = torch.from_numpy(np.array(values, dtype=np.float32))
+        if v.ndim == 1:
+            v = v.unsqueeze(0)
+        probs = torch.softmax(v, dim=1)
+        values_scalar = (probs[:, 0] - probs[:, 2]).numpy().astype(np.float32)
+
+        return (policies_np, values_scalar)
 
     # ═══════════════════════════════════════════════════════════════════════════
     # MAIN SEARCH METHOD
     # ═══════════════════════════════════════════════════════════════════════════
-    
+
     def search(self, root_state, temperature=1.0, history=None):
         """
-        Perform MCTS search with proper batched neural network inference.
+        Perform MCTS search.
 
         Args:
             root_state: ChessGame object for root position
-            temperature: Temperature for move selection (0=greedy, 1=proportional)
-            history: list of chess.Board copies, most recent first (up to 7).
-                     Used to build the stacked input tensor for every NN call
-                     during this search.
-
+            temperature: Temperature for move selection
+            history: list[chess.Board], most recent first, up to 7 entries.
+                     Used to fill historical planes 14-111 of to_tensor().
         Returns:
             Tuple of (best_move: str, policy_vector: np.ndarray)
         """
-        self._current_history = history or []
+        # Convert ChessGame → ChessBoard by replaying moves (preserves repetition tracking)
+        cpp_root = _chess_game_to_cpp_board(root_state)
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Step 1: Get root position evaluation from inference server
-        # ─────────────────────────────────────────────────────────────────────
-        root_tensor = torch.from_numpy(root_state.to_tensor(self._current_history))
+        # Convert python-chess Board history → ChessBoard history (from FEN).
+        # Minor approximation: repetition planes in history frames will be 0.
+        # Acceptable — matches the existing root-history approximation.
+        self._cpp_history = [mcts_engine_cpp.ChessBoard(b.fen()) for b in (history or [])]
+
+        # Get root position evaluation from inference server
+        root_tensor = torch.from_numpy(cpp_root.to_tensor(self._cpp_history)).unsqueeze(0)
         self.input_queue.put((self.worker_id, root_tensor))
-        
+
         try:
             policy, value = self._get_inference_result(timeout_ms=60000)
         except TimeoutError:
             print(f"[Worker {self.worker_id}] ❌ Server timeout - no root inference")
             raise RuntimeError("Server communication timeout")
-        
-        # ─────────────────────────────────────────────────────────────────────
-        # Step 2: Convert root policy/value for C++
-        # ─────────────────────────────────────────────────────────────────────
+
         if isinstance(policy, torch.Tensor):
             policy_np = policy.detach().cpu().numpy()
         else:
             policy_np = np.array(policy, dtype=np.float32)
-        
-        # Flatten if needed (handle single position)
+
         if policy_np.ndim == 2:
             policy_np = policy_np[0]
-        
+
         if isinstance(value, torch.Tensor):
-            if value.ndim == 0:
-                value_f = float(value)
-            else:
-                value_f = float(value.view(-1)[0])
+            v = value.detach().cpu()
         else:
-            try:
-                value_f = float(value)
-            except TypeError:
-                value_arr = np.array(value)
-                value_f = float(value_arr.reshape(-1)[0])
-        
-        # ─────────────────────────────────────────────────────────────────────
-        # Step 3: Call C++ MCTS with inference callback
-        # 
-        # This is where the magic happens:
-        # - C++ does fast tree traversal
-        # - C++ calls self._batch_inference_callback for each leaf batch
-        # - Callback sends to GPU server and returns real NN evaluations
-        # - C++ expands and backprops with real values
-        # ─────────────────────────────────────────────────────────────────────
+            v = torch.from_numpy(np.array(value, dtype=np.float32))
+        if v.ndim == 1:
+            v = v.unsqueeze(0)
+        probs = torch.softmax(v, dim=1)
+        value_f = float(probs[0, 0] - probs[0, 2])
+
         best_move, policy_vector = self.mcts_engine.search(
-            root_state,
+            cpp_root,
             policy_np,
             value_f,
             temperature,
             self.seed,
-            self._batch_inference_callback  # ← KEY: Pass callback to C++
+            self._batch_inference_callback
         )
-        
+
         return best_move, policy_vector
 
     # ═══════════════════════════════════════════════════════════════════════════
     # DIRECT SEARCH (for evaluation without queue server)
     # ═══════════════════════════════════════════════════════════════════════════
-    
+
     def search_direct(self, root_state, model, temperature=1.0, use_dirichlet=True, history=None):
         """
-        Direct MCTS search without queue communication.
-        Used for evaluation where we have direct model access.
-
-        Args:
-            root_state: ChessGame object
-            model: PyTorch model for direct inference
-            temperature: Temperature for move selection
-            use_dirichlet: Whether to add exploration noise (unused, C++ handles this)
-            history: list of chess.Board copies, most recent first (up to 7)
-
-        Returns:
-            Tuple of (best_move: str, policy_vector: np.ndarray)
+        Direct MCTS search with direct model access (no queue server).
+        Used by StockfishEvaluator / Arena during evaluation.
+        use_dirichlet: accepted for API compatibility; C++ engine handles Dirichlet internally.
         """
-        self._current_history = history or []
+        cpp_root = _chess_game_to_cpp_board(root_state)
+        cpp_history = [mcts_engine_cpp.ChessBoard(b.fen()) for b in (history or [])]
+
         device = next(model.parameters()).device
 
         def direct_inference_callback(leaf_states):
             if len(leaf_states) == 0:
                 return (
-                    np.zeros((0, 8192), dtype=np.float32),
+                    np.zeros((0, 4672), dtype=np.float32),
                     np.zeros((0,), dtype=np.float32)
                 )
-
-            tensors = [s.to_tensor(self._current_history) for s in leaf_states]
+            tensors = [s.to_tensor(cpp_history) for s in leaf_states]
             batch = torch.from_numpy(np.array(tensors)).to(device)
-
             with torch.no_grad():
                 policies, values = model(batch)
-
+            values_probs = torch.softmax(values, dim=1)
+            values_scalar = (values_probs[:, 0] - values_probs[:, 2]).cpu().numpy()
             return (
                 policies.cpu().numpy(),
-                values.cpu().numpy().flatten()
+                values_scalar
             )
 
-        # Get root evaluation
-        root_tensor = torch.from_numpy(root_state.to_tensor(self._current_history)).unsqueeze(0).to(device)
+        root_tensor = torch.from_numpy(cpp_root.to_tensor(cpp_history)).unsqueeze(0).to(device)
         with torch.no_grad():
             root_policy, root_value = model(root_tensor)
-        
+
         policy_np = root_policy[0].cpu().numpy()
-        value_f = float(root_value[0])
-        
-        # Call C++ with direct inference callback
+        root_value_probs = torch.softmax(root_value, dim=1)
+        value_f = float(root_value_probs[0, 0] - root_value_probs[0, 2])
+
         best_move, policy_vector = self.mcts_engine.search(
-            root_state,
+            cpp_root,
             policy_np,
             value_f,
             temperature,
             self.seed,
             direct_inference_callback
         )
-        
+
         return best_move, policy_vector
 
     # ═══════════════════════════════════════════════════════════════════════════
