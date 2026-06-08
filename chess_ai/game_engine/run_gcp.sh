@@ -4,27 +4,24 @@
 set -euo pipefail
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 0. Pre-flight: sudo access + git
+# 0. Pre-flight: sudo check (warn-only — packages may already be installed)
 # ──────────────────────────────────────────────────────────────────────────────
-if ! sudo -n true 2>/dev/null && ! sudo -v 2>/dev/null; then
-  echo "ERROR: This script requires sudo access but your user lacks it."
-  echo ""
-  echo "Fix via GCP Console:"
-  echo "  IAM & Admin → IAM → find your account → Add role: 'Compute OS Admin Login'"
-  echo ""
-  echo "Fix via gcloud (run on your local machine):"
-  echo "  gcloud projects add-iam-policy-binding <PROJECT_ID> \\"
-  echo "    --member='user:<YOUR_GOOGLE_EMAIL>' \\"
-  echo "    --role='roles/compute.osAdminLogin'"
-  echo ""
-  echo "Then SSH back in and re-run this script."
-  exit 1
+HAS_SUDO=false
+if sudo -n true 2>/dev/null || sudo -v 2>/dev/null; then
+  HAS_SUDO=true
+else
+  echo "WARNING: sudo not available. Skipping any apt installs."
+  echo "  If packages are missing, fix sudo via GCP IAM:"
+  echo "    IAM & Admin → IAM → Add role: 'Compute OS Admin Login'"
+  echo "  Then reconnect SSH (gcloud compute ssh ...) and re-run."
 fi
 
-# Ensure git is available (needed for future pulls; may not be pre-installed)
+# Helper: run a command only when we have sudo
+sudo_run() { $HAS_SUDO && sudo "$@" || echo "  [skip — no sudo] $*"; }
+
 if ! command -v git &>/dev/null; then
   echo "[pre] git not found — installing..."
-  sudo apt-get update -qq && sudo apt-get install -y git
+  sudo_run apt-get update -qq && sudo_run apt-get install -y git
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -52,16 +49,21 @@ echo ""
 echo "[1/9] Checking CUDA / GPU availability..."
 
 if ! command -v nvidia-smi &>/dev/null; then
-  echo "[0/9] NVIDIA driver not found — installing for Ubuntu..."
-  sudo apt-get update -qq
-  sudo apt-get install -y nvidia-driver-550
-  echo ""
-  echo "================================================================"
-  echo " Driver installed. A reboot is required to load the kernel module."
-  echo " Run:  sudo reboot"
-  echo " Then SSH back in and re-run:  bash run_gcp.sh"
-  echo "================================================================"
-  exit 0
+  if $HAS_SUDO; then
+    echo "[0/9] NVIDIA driver not found — installing for Ubuntu..."
+    sudo apt-get update -qq
+    sudo apt-get install -y nvidia-driver-550
+    echo ""
+    echo "================================================================"
+    echo " Driver installed. A reboot is required to load the kernel module."
+    echo " Run:  sudo reboot"
+    echo " Then SSH back in and re-run:  bash run_gcp.sh"
+    echo "================================================================"
+    exit 0
+  else
+    echo "ERROR: nvidia-smi not found and no sudo to install driver." >&2
+    exit 1
+  fi
 fi
 
 nvidia-smi
@@ -92,9 +94,13 @@ dpkg -s python3-dev &>/dev/null 2>&1  || MISSING_PKGS+=(python3-dev)
 dpkg -s python3-pip &>/dev/null 2>&1  || MISSING_PKGS+=(python3-pip)
 
 if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
-  echo "  Installing missing packages: ${MISSING_PKGS[*]}"
-  sudo apt-get update -qq
-  sudo apt-get install -y "${MISSING_PKGS[@]}"
+  echo "  Missing packages: ${MISSING_PKGS[*]}"
+  if $HAS_SUDO; then
+    sudo apt-get update -qq
+    sudo apt-get install -y "${MISSING_PKGS[@]}"
+  else
+    echo "  WARNING: Cannot install — no sudo. Continuing anyway (may fail later)."
+  fi
 else
   echo "  All system dependencies already installed."
 fi
