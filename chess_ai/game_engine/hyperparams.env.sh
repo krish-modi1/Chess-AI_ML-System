@@ -40,7 +40,7 @@ export CUDA_TIMEOUT_INFERENCE=0.02
 # Loop / eval / rules — identical on all platforms.
 export SIMULATIONS=800
 export EVAL_SIMULATIONS=800
-export GAMES_PER_WORKER=2
+export GAMES_PER_WORKER=10
 export ITERATIONS=1000
 export EVAL_WORKERS=10
 export GAMES_PER_EVAL_WORKER=4
