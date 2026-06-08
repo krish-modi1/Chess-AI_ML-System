@@ -298,7 +298,7 @@ current_iter = get_start_iteration(DATA_DIR) - 1
 # Training
 TRAIN_EPOCHS = 4 
 TRAIN_WINDOW = 50
-TRAIN_BATCH_SIZE = 1024
+TRAIN_BATCH_SIZE = 4096
 TRAIN_LR = 0.001       
 
 # --- DRY WORKER WRAPPERS ---
