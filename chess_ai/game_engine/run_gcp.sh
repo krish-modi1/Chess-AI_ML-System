@@ -115,16 +115,35 @@ if [[ ! -x "$STOCKFISH_PATH" ]]; then
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4. Python environment
+# 4. Python environment — Python 3.12 venv (system Python may be 3.13/3.14
+#    which has no PyTorch cu124 wheels)
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "[4/9] Setting up Python environment..."
 
+VENV_DIR="$HOME/.chess_ai_venv"
+
+if ! command -v python3.12 &>/dev/null; then
+  echo "  Python 3.12 not found — installing from deadsnakes PPA..."
+  sudo apt-get install -y software-properties-common
+  sudo add-apt-repository ppa:deadsnakes/ppa -y
+  sudo apt-get update -qq
+  sudo apt-get install -y python3.12 python3.12-dev python3.12-venv
+fi
+
+if [[ ! -d "$VENV_DIR" ]]; then
+  echo "  Creating Python 3.12 venv at $VENV_DIR..."
+  python3.12 -m venv "$VENV_DIR"
+fi
+
+source "$VENV_DIR/bin/activate"
+PYTHON="$VENV_DIR/bin/python3"
+
 echo "  Installing requirements (PyTorch CUDA 12.4 wheel)..."
-pip install -q --user --break-system-packages \
+pip install -q \
   --index-url https://download.pytorch.org/whl/cu124 \
   -r "$(dirname "$CHESS_AI_DIR")/requirements.txt"
-echo "  pip install complete. ($(python3 --version))"
+echo "  pip install complete. ($("$PYTHON" --version))"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 5. Model checkpoint
@@ -157,8 +176,8 @@ echo ""
 echo "[6/9] Building C++ MCTS extension..."
 
 GAME_ENGINE_DIR="$CHESS_AI_DIR/game_engine"
-PYBIND11_CMAKE_DIR=$(python3 -c "import pybind11; print(pybind11.get_cmake_dir())")
-PYTHON3_EXE=$(which python3)
+PYBIND11_CMAKE_DIR=$("$PYTHON" -c "import pybind11; print(pybind11.get_cmake_dir())")
+PYTHON3_EXE="$PYTHON"
 
 cd "$GAME_ENGINE_DIR"
 rm -rf build
@@ -185,7 +204,7 @@ echo "  C++ extension built and copied to $GAME_ENGINE_DIR/"
 echo ""
 echo "[7/9] Verifying C++ extension loads..."
 
-python3 - <<'PYCHECK'
+"$PYTHON" - <<'PYCHECK'
 import sys, os
 sys.path.insert(0, os.path.join(os.getcwd(), "game_engine"))
 import mcts_engine_cpp
@@ -238,11 +257,11 @@ echo ""
 
 if $BACKGROUND; then
   echo "  Running in background (nohup). PID will be written to logs/training.pid"
-  nohup python3 game_engine/main.py &
+  nohup "$PYTHON" game_engine/main.py &
   TRAIN_PID=$!
   echo "$TRAIN_PID" > "$CHESS_AI_DIR/logs/training.pid"
   echo "  Training started with PID $TRAIN_PID"
   echo "  Follow logs: tail -f $CHESS_AI_DIR/training_log.txt"
 else
-  python3 game_engine/main.py
+  "$PYTHON" game_engine/main.py
 fi
