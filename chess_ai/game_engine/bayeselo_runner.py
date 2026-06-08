@@ -67,19 +67,13 @@ class BayesEloRunner:
             print(f"❌ PGN file not found: {pgn_filepath}")
             return None
         
-        # BayesElo commands
-        commands = f"""readpgn {pgn_filepath}
-elo
-mm
-exactdist
-ratings
-x
-x
-"""
+        abs_pgn = os.path.abspath(pgn_filepath)
+        commands = f"readpgn {abs_pgn}\nelo\nmm\ncovariance\nratings\nx\nx\n"
         
         try:
+            os.chmod(self.bayeselo_path, 0o755)
             print(f"🔄 Running BayesElo on {os.path.basename(pgn_filepath)}...")
-            
+
             process = subprocess.Popen(
                 [self.bayeselo_path],
                 stdin=subprocess.PIPE,
@@ -134,40 +128,46 @@ x
         sf_ci_minus = None
         
         # Look for the ratings table output
-        # Format: rank name elo +ci -ci games score oppo draws
+        # Format: rank name [name2] elo +ci -ci games score oppo draws
+        # Player names may have spaces (e.g. "Stockfish 1320"), so detect
+        # the ELO column by checking whether tokens[2] is the Stockfish ELO
+        # suffix rather than a rating value.
         for line in lines:
             tokens = line.split()
-            
-            # Must have at least: rank name elo +ci -ci games score oppo draws
-            if len(tokens) >= 5:
-                try:
-                    # Check if first token is a digit (rank)
-                    rank = int(tokens[0])
-                    name = tokens[1]
-                    elo = float(tokens[2])
-                    plus_ci = float(tokens[3])
-                    minus_ci = float(tokens[4])
-                    
-                    # Store relative Elo values
-                    if name == "Model":
-                        model_relative = elo
-                        model_ci_plus = plus_ci
-                        model_ci_minus = minus_ci
-                    elif name == "Stockfish":
-                        sf_relative = elo
-                        sf_ci_plus = plus_ci
-                        sf_ci_minus = minus_ci
-                except (ValueError, IndexError):
-                    pass
-        
+
+            if len(tokens) < 5:
+                continue
+            try:
+                int(tokens[0])  # rank — must be numeric
+            except ValueError:
+                continue
+
+            try:
+                name = tokens[1]
+
+                if name == "Model":
+                    model_relative = float(tokens[2])
+                    model_ci_plus  = float(tokens[3])
+                    model_ci_minus = float(tokens[4])
+
+                elif name.startswith("Stockfish"):
+                    # Detect two-word name "Stockfish 1320": tokens[2] is the
+                    # ELO suffix, not the relative rating — shift columns by 1.
+                    shift = 1 if tokens[2] == str(self.stockfish_elo) else 0
+                    sf_relative = float(tokens[2 + shift])
+                    sf_ci_plus  = float(tokens[3 + shift])
+                    sf_ci_minus = float(tokens[4 + shift])
+
+            except (ValueError, IndexError):
+                pass
+
         # Compute results if we have both
         if model_relative is not None and sf_relative is not None:
-            # Convert from relative to absolute ratings
-            # BayesElo reports relative: Model + Stockfish = 0
-            # We need absolute: use Stockfish baseline (1350 Elo)
-            
-            model_abs = self.stockfish_elo + model_relative
-            sf_abs = self.stockfish_elo  # Stockfish is at baseline
+            # BayesElo reports ratings relative to the group mean (≈0).
+            # Anchor to Stockfish's known absolute ELO:
+            #   model_abs = stockfish_actual + (model_relative - sf_relative)
+            model_abs = self.stockfish_elo + model_relative - sf_relative
+            sf_abs    = self.stockfish_elo
             
             results['model_elo'] = model_abs
             results['model_ci_lower'] = model_abs - model_ci_minus

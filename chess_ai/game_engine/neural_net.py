@@ -2,7 +2,8 @@ import torch
 import torch.multiprocessing as mp
 import time
 import numpy as np
-import concurrent.futures 
+import concurrent.futures
+import queue
 
 from game_engine.cnn import ChessCNN
 
@@ -35,19 +36,12 @@ class InferenceServer:
         
         # GPU operations on dedicated stream
         with torch.cuda.stream(stream):
-            mega_batch_gpu = mega_batch.to(device, non_blocking=True)
-            
+            mega_batch_gpu = mega_batch.to(device, dtype=torch.float32, non_blocking=True)
+
             with torch.no_grad():
                 policies_gpu, values_gpu = model(mega_batch_gpu)
-            
-            # Record event when GPU work completes
-            done_event = torch.cuda.Event()
-            done_event.record(stream)
-        
-        # Wait for this stream's work to complete
-        done_event.synchronize()
-        
-        # Transfer back to CPU
+
+        # .cpu() is blocking — synchronizes the stream implicitly
         policies = policies_gpu.cpu().numpy()
         values = values_gpu.cpu().numpy()
 
@@ -71,16 +65,12 @@ class InferenceServer:
         self.current_stream_idx = 0
         
         print(f"Server: Loading model from {self.model_path}")
-        try:
-            checkpoint = torch.load(self.model_path, map_location=self.device)
-            if 'model_state_dict' in checkpoint: model.load_state_dict(checkpoint['model_state_dict'])
-            elif 'state_dict' in checkpoint: model.load_state_dict(checkpoint['state_dict'])
-            else: model.load_state_dict(checkpoint)
-        except Exception as e:
-            print(f"Server Warning: {e}")
-            
+        checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=True)
+        state = checkpoint.get('model_state_dict', checkpoint.get('state_dict', checkpoint))
+        if any(k.startswith('_orig_mod.') for k in state):
+            state = {k.removeprefix('_orig_mod.'): v for k, v in state.items()}
+        model.load_state_dict(state)
         model.eval()
-        model.share_memory() 
         
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.num_streams)
         print(f"Server Ready: Batch={self.batch_size}, Timeout={self.timeout}s, Streams={self.num_streams}, Device={self.device}")
@@ -104,19 +94,23 @@ class InferenceServer:
                 try:
                     item = self.input_queue.get(timeout=0.01)
                     if item == "STOP":
-                        executor.shutdown()
+                        # Flush any partial batch before shutting down
+                        if batch_data:
+                            stream = self.streams[self.current_stream_idx]
+                            executor.submit(self.process_batch, batch_data, stream, model, self.device)
+                        executor.shutdown(wait=True)
                         return
-                    
+
                     tensor = item[1]
                     item_size = tensor.shape[0] if tensor.ndim == 4 else 1
                     batch_data.append(item)
                     current_batch_count += item_size
-                    
-                except: 
+
+                except queue.Empty:
                     pass
-            
-                # Check timeout without sleep
-                if current_batch_count > 0 and (time.time() - start_time > self.timeout):
+
+                # Flush partial batch on timeout regardless of size
+                if time.time() - start_time > self.timeout:
                     break
             
             if batch_data:

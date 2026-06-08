@@ -135,9 +135,10 @@ py::array_t<float> MCTSEngine::get_policy_vector(const std::shared_ptr<MCTSNode>
         counts.push_back(v);
     }
 
+    float exponent = (temperature > 1e-6f) ? 1.0f / temperature : 1e6f;
     float total = 0.0f;
     for (auto& c : counts) {
-        c = std::pow(c, 1.3f);
+        c = std::pow(c, exponent);
         total += c;
     }
 
@@ -210,7 +211,8 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::search(
     float initial_value,
     float temperature,
     uint32_t seed,
-    py::function inference_callback) {
+    py::function inference_callback,
+    bool use_dirichlet) {
 
     rng.seed(seed);
 
@@ -228,7 +230,7 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::search(
         root->expand(legal_moves, policy_vec);
     }
 
-    add_dirichlet_noise(root);
+    if (use_dirichlet) add_dirichlet_noise(root);
 
     int num_iterations = std::max(1, simulations / batch_size);
 

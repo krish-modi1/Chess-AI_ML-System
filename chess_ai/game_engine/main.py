@@ -147,6 +147,7 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
 
         # Reset MCTS tree cache at game start so we never carry state across games.
         worker.reset_cache()
+        game_aborted = False
 
         try:
             while not game.is_over:
@@ -168,12 +169,14 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                     game, temperature=current_temp, history=history_snapshot
                 )
 
+                # Capture state and turn BEFORE push — MCTS searched this position.
+                # Storing post-push state would mismatch the policy targets.
+                current_turn = game.turn_player
+                state_tensor = game.to_tensor(history_snapshot)
+
                 # Advance tree cache to the played move before the next search.
                 # This retains the explored subtree, saving redundant simulations.
                 worker.advance_root(best_move)
-
-                # Save current board to history before applying the move
-                position_history.appendleft(game.board.copy())
 
                 # Try to apply the move
                 move_applied = game.push(best_move)
@@ -181,13 +184,16 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                     print(f" [Worker {worker_id}] ❌ Illegal move from MCTS: {best_move}")
                     print(f" [Worker {worker_id}]   Legal moves: {game.legal_moves()}")
                     worker.reset_cache()
+                    game_aborted = True
                     break
 
-                # Record post-move state with its history (history now includes pre-move board)
+                # Update history with the committed board for the next move's search
+                position_history.appendleft(game.board.copy())
+
                 game_data.append({
-                    "state": game.to_tensor(list(position_history)),
+                    "state": state_tensor,
                     "policy": mcts_policy,
-                    "turn": game.turn_player,
+                    "turn": current_turn,
                 })
 
                 
@@ -198,6 +204,11 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
             print(f" [Worker {worker_id}] ❌ ERROR during game {i+1}: {e}")
             import traceback
             traceback.print_exc()
+            continue
+
+        if game_aborted or not game_data:
+            print(f" [Worker {worker_id}] Game {i+1} aborted or empty — skipping save")
+            gc.collect()
             continue
 
         if forced_draw:
@@ -257,7 +268,7 @@ BEST_MODEL = f"{MODEL_DIR}/best_model.pth"
 CANDIDATE_MODEL = f"{MODEL_DIR}/candidate.pth"
 
 # --- CUDA ---
-CUDA_TIMEOUT_INFERENCE = 1.0
+CUDA_TIMEOUT_INFERENCE = float(os.environ.get("CUDA_TIMEOUT_INFERENCE", 0.02))
 CUDA_STREAMS = int(os.environ.get("CUDA_STREAMS", 8))
 CUDA_BATCH_SIZE = int(os.environ.get("CUDA_BATCH_SIZE", 4096))
 
@@ -464,16 +475,19 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss):
         raise
 
     
-    # Collect Arena Results
+    # Collect Arena Results — use fixed-count get() to avoid Queue.empty() race condition
     total_wins, total_draws, total_losses, total_forced_draws = 0, 0, 0, 0
-    while not arena_queue.empty():
-        res = arena_queue.get()
-        total_wins += res['wins']
-        total_draws += res['draws']
-        total_losses += res['losses']
-        total_forced_draws += res['forced_draws']
+    for _ in range(EVAL_WORKERS):
+        try:
+            res = arena_queue.get(timeout=5)
+            total_wins += res['wins']
+            total_draws += res['draws']
+            total_losses += res['losses']
+            total_forced_draws += res['forced_draws']
+        except Exception:
+            pass
     
-    total_score = total_wins + 0.75 * total_forced_draws + 0.5 * total_draws
+    total_score = total_wins + 0.5 * total_forced_draws + 0.5 * total_draws
     total_game_count = total_wins + total_draws + total_forced_draws + total_losses
     win_rate = total_score / total_game_count if total_game_count > 0 else 0
     
@@ -493,8 +507,10 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss):
     # 3. FETCH LAST CHAMPION ELO FROM METRICS
     last_champion_elo = None
     try:
-        if os.path.exists("game_engine/model/metrics.json"):
-            with open("game_engine/model/metrics.json", "r") as f:
+        _metrics_file = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "model", "metrics.json")
+        if os.path.exists(_metrics_file):
+            with open(_metrics_file, "r") as f:
                 metrics_history = json.load(f)
                 if metrics_history and len(metrics_history) > 0:
                     # Get last entry with valid model elo (not stockfish_elo)

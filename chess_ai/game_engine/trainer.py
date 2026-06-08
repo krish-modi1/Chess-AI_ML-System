@@ -1,13 +1,19 @@
+import warnings
+warnings.filterwarnings('ignore')
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader, random_split
+from tqdm import tqdm
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import numpy as np
 import os
 import glob
 import sys
 import time
+import bisect
 import collections
 
 # Ensure we can import from the parent directory
@@ -125,6 +131,9 @@ class ChessDataset(Dataset):
                 print(f"Error checking {f}: {e}")
                 continue
 
+        # Precompute start indices for O(log N) bisect lookup
+        self._start_idxs = [fi.start_idx for fi in self.file_map]
+
         # Cache for the currently loaded file
         self._current_file = None
         self._current_data = None
@@ -135,32 +144,24 @@ class ChessDataset(Dataset):
         return self.total_positions
 
     def _load_file_for_index(self, idx):
-        # Determine which file the global index 'idx' belongs to
-        
-        # Binary search or simple iteration (simple iteration is fine for typical file counts)
-        target_file = None
-        local_idx = 0
-        
-        for file_info in self.file_map:
-            if file_info.start_idx <= idx <= file_info.end_idx:
-                target_file = file_info.file_path
-                local_idx = idx - file_info.start_idx
-                break
-
-        if target_file is None:
+        # O(log N) bisect lookup
+        i = bisect.bisect_right(self._start_idxs, idx) - 1
+        if i < 0 or i >= len(self.file_map):
             raise IndexError(f"Index {idx} out of range for file map.")
-            
+        file_info = self.file_map[i]
+        target_file = file_info.file_path
+        local_idx = idx - file_info.start_idx
+
         # Check if the file is already cached
         if target_file != self._current_file:
-            # print(f"Loading new data file: {target_file}")
-            data = np.load(target_file, allow_pickle=True)
-            self._current_data = {
-                'states': torch.from_numpy(data['states']),
-                'policies': torch.from_numpy(data['policies']),
-                'values': torch.from_numpy(data['values'].astype(np.int64)),
-            }
+            with np.load(target_file, allow_pickle=True) as data:
+                self._current_data = {
+                    'states':   torch.from_numpy(data['states'].copy()),
+                    'policies': torch.from_numpy(data['policies'].copy()),
+                    'values':   torch.from_numpy(data['values'].astype(np.int64)),
+                }
             self._current_file = target_file
-            
+
         return self._current_data, local_idx
 
 
@@ -193,6 +194,7 @@ def train_model(data_path="data/self_play",
     Trains the model on data from data_path.
     Returns: (avg_policy_loss, avg_value_loss)
     """
+    warnings.filterwarnings('ignore')
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on {device}...")
 
@@ -202,15 +204,24 @@ def train_model(data_path="data/self_play",
         print("Skipping training (No Data).")
         return 0.0, 0.0
 
-    # Optimization: num_workers > 0 and pin_memory=True for faster GPU transfer
+    num_dl_workers = min(4, max(1, (os.cpu_count() or 4) // 4))
+
+    val_size   = max(1, int(len(dataset) * 0.1))
+    train_size = len(dataset) - val_size
+    train_dataset, val_dataset = random_split(
+        dataset, [train_size, val_size],
+        generator=torch.Generator().manual_seed(42),
+    )
+
     dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=12,
-        prefetch_factor=4,          
-        pin_memory=True,            
-        persistent_workers=True  
+        train_dataset, batch_size=batch_size, shuffle=True,
+        num_workers=num_dl_workers, pin_memory=True,
+        persistent_workers=(num_dl_workers > 0),
+    )
+    val_dataloader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False,
+        num_workers=num_dl_workers, pin_memory=True,
+        persistent_workers=(num_dl_workers > 0),
     )
 
     # 2. Load Model
@@ -222,20 +233,24 @@ def train_model(data_path="data/self_play",
         try:
             raw = torch.load(input_model_path, map_location=device)
             if 'model_state_dict' in raw:
-                model.load_state_dict(raw['model_state_dict'])
+                sd = raw['model_state_dict']
                 checkpoint = raw
             elif 'state_dict' in raw:
-                model.load_state_dict(raw['state_dict'])
+                sd = raw['state_dict']
                 checkpoint = raw
             else:
-                model.load_state_dict(raw)  # legacy bare state dict — no optimizer/scheduler to restore
+                sd = raw  # legacy bare state dict — no optimizer/scheduler to restore
+            # Strip torch.compile prefix (_orig_mod.) if present
+            if any(k.startswith('_orig_mod.') for k in sd):
+                sd = {k.removeprefix('_orig_mod.'): v for k, v in sd.items()}
+            model.load_state_dict(sd)
         except Exception as e:
             print(f"Error loading model, starting fresh: {e}")
     else:
         print(f"No existing model at {input_model_path}, starting from random weights.")
 
     model.train()
-    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-3)
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
     total_steps = total_iterations * len(dataloader)
     scheduler = CosineAnnealingLR(optimizer, T_max=max(total_steps, 1), eta_min=1e-6)
@@ -251,76 +266,122 @@ def train_model(data_path="data/self_play",
     ce_value_loss = nn.CrossEntropyLoss()
     
     # --- AMP Scaler ---
-    scaler = torch.amp.GradScaler(device.type)
+    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == 'cuda'))
+
+    # ── Header ─────────────────────────────────────────────────────────────────
+    n_train = len(dataloader)
+    n_val   = len(val_dataloader)
+    sep = '─' * 86
+    print(f"\n{'═'*86}")
+    print(f"  RL Training  |  {epochs} epochs  |  batch={batch_size}"
+          f"  |  {train_size} train / {val_size} val positions")
+    print(f"  {n_train} train batches/ep  |  {n_val} val batches/ep"
+          f"  |  {num_dl_workers} DataLoader workers")
+    print(f"{'═'*86}")
+    print(f"{'Ep':>6}  {'Tr-P':>7}  {'Tr-V':>7}  {'Va-P':>7}  {'Va-V':>7}"
+          f"  {'Tr-Acc':>7}  {'Va-Acc':>7}  {'GNorm':>7}  {'LR':>10}  {'Time':>5}")
+    print(sep)
+    sys.stdout.flush()
 
     last_p_loss = 0.0
     last_v_loss = 0.0
+    best_val    = float('inf')
 
     # 4. Training Loop
     for epoch in range(epochs):
-        epoch_start_time = time.time()
-        total_loss = 0
-        p_loss_total = 0
-        v_loss_total = 0
-        batch_count = 0
+        epoch_start = time.time()
 
-        for batch_idx, batch in enumerate(dataloader):
-            states = batch['state'].to(device, non_blocking=True)
+        # ── Train pass ─────────────────────────────────────────────────────────
+        model.train()
+        tr_p = tr_v = tr_acc = g_norm = 0.0
+        n_tr = 0
+
+        train_bar = tqdm(dataloader, desc=f"  train {epoch+1}/{epochs}",
+                         leave=False, ncols=88, unit='bat')
+        for batch in train_bar:
+            states          = batch['state'].to(device, non_blocking=True)
             target_policies = batch['policy'].to(device, non_blocking=True)
-            target_values = batch['value'].to(device, non_blocking=True)
-            
-            optimizer.zero_grad()
-            
-            # --- Mixed Precision Forward Pass ---
-            with torch.amp.autocast(device_type=device.type):
-                # cnn returns (policy_logits, value)
-                pred_policies, pred_values = model(states)
-                
-                # --- Value Loss (CrossEntropy, WDL: 0=win,1=draw,2=loss) ---
-                v_loss = ce_value_loss(pred_values, target_values)
-                
-                # --- Policy Loss (Cross Entropy) ---
-                log_probs = torch.log_softmax(pred_policies, dim=1)
-                p_loss = -(target_policies * log_probs).sum(dim=1).mean()
-                
-                # Total Loss
-                loss = v_loss + p_loss
-            
-            # --- Scaled Backward Pass ---
-            scaler.scale(loss).backward()
+            target_values   = batch['value'].to(device, non_blocking=True)
 
-            # Unscale and clip gradients for stability
+            optimizer.zero_grad(set_to_none=True)
+
+            with torch.amp.autocast(device_type=device.type):
+                pred_policies, pred_values = model(states)
+                v_loss = ce_value_loss(pred_values, target_values)
+
+            # Policy loss in fp32: pred_policies may be fp16 inside autocast and
+            # fp16 softmax can overflow to NaN (not just -inf). clamp handles -inf→-100
+            # and nan_to_num handles any remaining NaN in log_probs or sparse targets.
+            log_probs = torch.log_softmax(pred_policies.float(), dim=1).clamp(min=-100.0)
+            p_loss = -(target_policies.nan_to_num(0.0) * log_probs).sum(dim=1).mean()
+            loss   = v_loss + p_loss
+
+            scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
-
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
 
-            total_loss += loss.item()
-            p_loss_total += p_loss.item()
-            v_loss_total += v_loss.item()
-            batch_count += 1
+            acc = (pred_policies.detach().argmax(1) == target_policies.argmax(1)).float().mean().item()
+            tr_p   += p_loss.item()
+            tr_v   += v_loss.item()
+            tr_acc += acc
+            g_norm += total_norm.item()
+            n_tr   += 1
+            train_bar.set_postfix(p=f"{p_loss.item():.3f}", v=f"{v_loss.item():.3f}",
+                                   acc=f"{acc*100:.1f}%")
 
-            # SIMPLE LOGGING FIX
-            if (batch_idx + 1) % 5 == 0:
-                avg_loss = total_loss / batch_count
-                elapsed = time.time() - epoch_start_time
-                eta_secs = int((elapsed / (batch_idx + 1)) * (len(dataloader) - batch_idx - 1))
-                eta_str = f"{eta_secs//60}m {eta_secs%60}s" if eta_secs >= 60 else f"{eta_secs}s"
-                print(f"Batch {batch_idx+1}/{len(dataloader)} Loss {avg_loss:.4f} ETA {eta_str}")
+        # ── Val pass ───────────────────────────────────────────────────────────
+        model.eval()
+        va_p = va_v = va_acc = 0.0
+        n_va = 0
 
-            # Optional: Log gradient norm occasionally (every 50 batches)
-            if (batch_idx + 1) % 50 == 0 and batch_idx > 0:
-                print(f"  Grad Norm: {total_norm:.4f}")
+        val_bar = tqdm(val_dataloader, desc=f"  val   {epoch+1}/{epochs}",
+                       leave=False, ncols=88, unit='bat')
+        with torch.no_grad():
+            for batch in val_bar:
+                states          = batch['state'].to(device, non_blocking=True)
+                target_policies = batch['policy'].to(device, non_blocking=True)
+                target_values   = batch['value'].to(device, non_blocking=True)
 
-        
-        if batch_count > 0:
-            last_p_loss = p_loss_total / batch_count
-            last_v_loss = v_loss_total / batch_count
+                with torch.amp.autocast(device_type=device.type):
+                    pred_policies, pred_values = model(states)
+                    v_loss = ce_value_loss(pred_values, target_values)
 
-            current_lr = scheduler.get_last_lr()[0]
-            print(f"Epoch {epoch+1}/{epochs} | Loss: {total_loss/batch_count:.4f} (Pol: {last_p_loss:.4f} Val: {last_v_loss:.4f}) | LR: {current_lr:.2e}")
+                log_probs = torch.log_softmax(pred_policies.float(), dim=1).clamp(min=-100.0)
+                p_loss = -(target_policies.nan_to_num(0.0) * log_probs).sum(dim=1).mean()
+
+                acc = (pred_policies.argmax(1) == target_policies.argmax(1)).float().mean().item()
+                va_p   += p_loss.item()
+                va_v   += v_loss.item()
+                va_acc += acc
+                n_va   += 1
+
+        # ── Epoch row ──────────────────────────────────────────────────────────
+        tr_p_avg   = tr_p  / max(n_tr, 1)
+        tr_v_avg   = tr_v  / max(n_tr, 1)
+        va_p_avg   = va_p  / max(n_va, 1)
+        va_v_avg   = va_v  / max(n_va, 1)
+        tr_acc_pct = tr_acc / max(n_tr, 1) * 100
+        va_acc_pct = va_acc / max(n_va, 1) * 100
+        gn_avg     = g_norm / max(n_tr, 1)
+        lr         = scheduler.get_last_lr()[0]
+        elapsed    = int(time.time() - epoch_start)
+
+        val_total = va_p_avg + va_v_avg
+        marker = ' ↑' if val_total < best_val else ''
+        if val_total < best_val:
+            best_val = val_total
+
+        print(f"{epoch+1:>3}/{epochs:<3}  {tr_p_avg:>7.4f}  {tr_v_avg:>7.4f}"
+              f"  {va_p_avg:>7.4f}  {va_v_avg:>7.4f}"
+              f"  {tr_acc_pct:>6.1f}%  {va_acc_pct:>6.1f}%"
+              f"  {gn_avg:>7.3f}  {lr:>10.2e}  {elapsed:>4}s{marker}")
+        sys.stdout.flush()
+
+        last_p_loss = tr_p_avg
+        last_v_loss = tr_v_avg
 
     # 5. Save Model
     os.makedirs(os.path.dirname(output_model_path), exist_ok=True)

@@ -13,7 +13,7 @@ AlphaZero-style chess engine trained entirely from self-play. PyTorch ResNet + C
 gdown 1FHQQI9hNmIxAZd6zmX6QO8oow5ekjgGs -O game_engine/model/best_model.pth
 ```
 
-Or manually: https://drive.google.com/file/d/1FHQQI9hNmIxAZd6zmX6QO8oow5ekjgGs
+Or manually: https://drive.google.com/file/d/1FHQQI9hNmIxAZd6zmX6QO8oow5ekjgGs/view?usp=drive_link
 
 > 120-channel AlphaZero-style ResNet (256ch, 20 blocks). 416 MB.
 

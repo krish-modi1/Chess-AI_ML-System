@@ -278,7 +278,8 @@ class MCTSWorker:
             value_f,
             temperature,
             self.seed,
-            direct_inference_callback
+            direct_inference_callback,
+            use_dirichlet,
         )
 
         return best_move, policy_vector

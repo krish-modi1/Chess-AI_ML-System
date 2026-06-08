@@ -35,13 +35,11 @@ class EvalMCTS:
         
         if os.path.exists(model_path):
             try:
-                checkpoint = torch.load(model_path, map_location=self.device)
-                if 'model_state_dict' in checkpoint:
-                    self.model.load_state_dict(checkpoint['model_state_dict'])
-                elif 'state_dict' in checkpoint:
-                    self.model.load_state_dict(checkpoint['state_dict'])
-                else:
-                    self.model.load_state_dict(checkpoint)
+                checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
+                state = checkpoint.get('model_state_dict', checkpoint.get('state_dict', checkpoint))
+                if any(k.startswith('_orig_mod.') for k in state):
+                    state = {k.removeprefix('_orig_mod.'): v for k, v in state.items()}
+                self.model.load_state_dict(state)
                 print(f"[Eval] Loaded model from {model_path}")
             except Exception as e:
                 print(f"[Eval] ❌ Failed to load checkpoint: {e}")
@@ -165,7 +163,7 @@ class Arena:
         if result == "1-0":
             outcome = "CAND_WIN" if cand_is_white else "CHAMP_WIN"
         elif result == "0-1":
-            outcome = "CAND_WIN" if cand_is_white else "CHAMP_WIN"
+            outcome = "CHAMP_WIN" if cand_is_white else "CAND_WIN"
         else:
             outcome = "DRAW"
         
@@ -249,8 +247,8 @@ def _play_stockfish_game(args):
     result = game.result
 
     # Build PGN
-    white_name = "Model" if agent_is_white else f"Stockfish {stockfish_elo}"
-    black_name = f"Stockfish {stockfish_elo}" if agent_is_white else "Model"
+    white_name = "Model" if agent_is_white else "Stockfish"
+    black_name = "Stockfish" if agent_is_white else "Model"
 
     pgn_game = chess.pgn.Game()
     pgn_game.headers["Event"] = "Model vs Stockfish"
@@ -426,8 +424,9 @@ class MetricsLogger:
             "stockfish_elo": int(stockfish_elo) if stockfish_elo is not None else None,
         }
         
-        os.makedirs("game_engine/model", exist_ok=True)
-        metrics_file = "game_engine/model/metrics.json"
+        _metrics_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model")
+        os.makedirs(_metrics_dir, exist_ok=True)
+        metrics_file = os.path.join(_metrics_dir, "metrics.json")
         
         metrics = []
         if os.path.exists(metrics_file):

@@ -28,8 +28,17 @@ echo ""
 echo "[1/9] Checking CUDA / GPU availability..."
 
 if ! command -v nvidia-smi &>/dev/null; then
-  echo "ERROR: nvidia-smi not found. Is the NVIDIA driver installed?" >&2
-  exit 1
+  echo "[0/9] NVIDIA driver not found — installing for Ubuntu..."
+  sudo apt-get update -qq
+  sudo apt-get install -y ubuntu-drivers-common linux-headers-$(uname -r)
+  sudo ubuntu-drivers autoinstall
+  echo ""
+  echo "================================================================"
+  echo " Driver installed. A reboot is required to load the kernel module."
+  echo " Run:  sudo reboot"
+  echo " Then SSH back in and re-run:  bash run_gcp.sh"
+  echo "================================================================"
+  exit 0
 fi
 
 nvidia-smi
@@ -54,7 +63,9 @@ command -v cmake          &>/dev/null || MISSING_PKGS+=(cmake)
 command -v make           &>/dev/null || MISSING_PKGS+=(build-essential)
 command -v tmux           &>/dev/null || MISSING_PKGS+=(tmux)
 command -v nvtop          &>/dev/null || MISSING_PKGS+=(nvtop)
+command -v git            &>/dev/null || MISSING_PKGS+=(git)
 dpkg -s python3-dev &>/dev/null 2>&1  || MISSING_PKGS+=(python3-dev)
+dpkg -s python3-pip &>/dev/null 2>&1  || MISSING_PKGS+=(python3-pip)
 
 if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
   echo "  Installing missing packages: ${MISSING_PKGS[*]}"
@@ -97,7 +108,7 @@ if [[ -d "$CONDA_CHESSAI" ]]; then
 else
   echo "  conda env 'chessai' not found — installing via pip to ~/.local"
   echo "  Installing requirements (PyTorch CUDA 12.4 wheel)..."
-  pip install -q --user \
+  pip install -q --user --break-system-packages \
     --index-url https://download.pytorch.org/whl/cu124 \
     -r "$CHESS_AI_DIR/requirements.txt"
   echo "  pip install complete."
@@ -110,7 +121,7 @@ echo ""
 echo "[5/9] Checking model checkpoint..."
 
 MODEL_PATH="$CHESS_AI_DIR/game_engine/model/best_model.pth"
-GDRIVE_FILE_ID="${GDRIVE_MODEL_ID:-1FHQQI9hNmIxAZd6zmX6QO8oow5ekjgGs}"  # 120-channel model
+GDRIVE_FILE_ID="${GDRIVE_MODEL_ID:-}"  # set GDRIVE_MODEL_ID after running pretrain_lichess.ipynb
 
 if [[ -f "$MODEL_PATH" ]]; then
   echo "  best_model.pth found ($(du -h "$MODEL_PATH" | cut -f1))"
@@ -175,35 +186,14 @@ PYCHECK
 echo ""
 echo "[8/9] Setting hyperparameters based on GPU VRAM (${VRAM_GB} GB)..."
 
-if (( VRAM_GB >= 35 )); then
-  # A100 (40 GB / 80 GB)
-  GPU_TIER="A100"
-  export CUDA_BATCH_SIZE=8192
-  export CUDA_STREAMS=8
-  export WORKER_BATCH_SIZE=256
-elif (( VRAM_GB >= 20 )); then
-  # A30 / V100-32GB
-  GPU_TIER="A30/V100-32"
-  export CUDA_BATCH_SIZE=6144
-  export CUDA_STREAMS=6
-  export WORKER_BATCH_SIZE=200
-else
-  # T4 / V100-16GB or anything smaller
-  GPU_TIER="T4/V100-16"
-  export CUDA_BATCH_SIZE=4096
-  export CUDA_STREAMS=4
-  export WORKER_BATCH_SIZE=160
-fi
-
 NCPU=$(nproc)
-export NUM_WORKERS=$(( NCPU > 2 ? NCPU - 2 : 1 ))
-export SIMULATIONS=800
-export GAMES_PER_WORKER=2
-export ITERATIONS=1000
-export EVAL_SIMULATIONS=400
-export STOCKFISH_GAMES=20
-export EVAL_WORKERS=10
-export GAMES_PER_EVAL_WORKER=4
+source "$GAME_ENGINE_DIR/hyperparams.env.sh"
+
+# GPU tier label (display only).
+if   (( VRAM_MIB >= 35000 )); then GPU_TIER="A100"
+elif (( VRAM_MIB >= 20000 )); then GPU_TIER="A30/V100-32"
+else                                GPU_TIER="T4/V100-16"
+fi
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 8. Print final config summary
@@ -219,16 +209,16 @@ echo "  SIMULATIONS      : $SIMULATIONS"
 echo "  GAMES_PER_WORKER : $GAMES_PER_WORKER"
 echo "  ITERATIONS       : $ITERATIONS"
 echo "  STOCKFISH_PATH   : $STOCKFISH_PATH"
-echo "  Log file         : $CHESS_AI_DIR/logs/training.log"
+echo "  Log file         : $CHESS_AI_DIR/training_log.txt"
 echo "  EVAL_SIMULATIONS : $EVAL_SIMULATIONS"
 echo "  STOCKFISH_GAMES  : $STOCKFISH_GAMES"
+echo "  CUDA_TIMEOUT     : ${CUDA_TIMEOUT_INFERENCE}s"
+echo "  MAX_MOVES        : $MAX_MOVES_PER_GAME"
 echo ""
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 9. Launch training
 # ──────────────────────────────────────────────────────────────────────────────
-LOG_PATH="$CHESS_AI_DIR/logs/training.log"
-
 echo "============================================================"
 echo " Launching training..."
 echo "============================================================"
@@ -236,11 +226,11 @@ echo ""
 
 if $BACKGROUND; then
   echo "  Running in background (nohup). PID will be written to logs/training.pid"
-  nohup python3 game_engine/main.py >> "$LOG_PATH" 2>&1 &
+  nohup python3 game_engine/main.py &
   TRAIN_PID=$!
   echo "$TRAIN_PID" > "$CHESS_AI_DIR/logs/training.pid"
   echo "  Training started with PID $TRAIN_PID"
-  echo "  Follow logs: tail -f $LOG_PATH"
+  echo "  Follow logs: tail -f $CHESS_AI_DIR/training_log.txt"
 else
-  python3 game_engine/main.py 2>&1 | tee -a "$LOG_PATH"
+  python3 game_engine/main.py
 fi

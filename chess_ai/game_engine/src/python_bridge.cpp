@@ -42,7 +42,8 @@ PYBIND11_MODULE(mcts_engine_cpp, m)
              py::arg("initial_value"),
              py::arg("temperature") = 1.0f,
              py::arg("seed") = 0u,
-             py::arg("inference_callback"))
+             py::arg("inference_callback"),
+             py::arg("use_dirichlet") = true)
 
         .def("advance_root", &MCTSEngine::advance_root,
              py::arg("played_move"))

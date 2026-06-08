@@ -132,7 +132,8 @@ public:
         float initial_value,
         float temperature,
         uint32_t seed,
-        py::function inference_callback
+        py::function inference_callback,
+        bool use_dirichlet = true
     );
 
     bool advance_root(const std::string& played_move);
