@@ -7,8 +7,8 @@
 #
 # Exports the full env-var contract consumed by game_engine/main.py.
 
-# Workers: all logical cores minus 2 (inference server + OS), min 1.
-export NUM_WORKERS=$(( NCPU > 2 ? NCPU - 2 : 1 ))
+# 60 workers — oversubscribed (workers block on inference); 2 cores reserved for system/server.
+export NUM_WORKERS=60
 
 # VRAM tier → worker leaf batch per call, CUDA stream count, VRAM-safe batch cap.
 #

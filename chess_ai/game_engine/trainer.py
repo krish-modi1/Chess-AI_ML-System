@@ -204,7 +204,7 @@ def train_model(data_path="data/self_play",
         print("Skipping training (No Data).")
         return 0.0, 0.0
 
-    num_dl_workers = min(4, max(1, (os.cpu_count() or 4) // 4))
+    num_dl_workers = min(8, max(1, (os.cpu_count() or 4) // 4))
 
     val_size   = max(1, int(len(dataset) * 0.1))
     train_size = len(dataset) - val_size

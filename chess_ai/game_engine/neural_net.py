@@ -26,33 +26,32 @@ class InferenceServer:
 
         worker_ids = [item[0] for item in batch_data]
         raw_tensors = [item[1] for item in batch_data]
-        
-        # Track sizes
+
         sizes = [t.shape[0] if t.ndim == 4 else 1 for t in raw_tensors]
-        
-        # CPU preprocessing
+
         processed_tensors = [t if t.ndim == 4 else t.unsqueeze(0) for t in raw_tensors]
         mega_batch = torch.cat(processed_tensors, dim=0)
-        
-        # GPU operations on dedicated stream
+        del processed_tensors
+
         with torch.cuda.stream(stream):
             mega_batch_gpu = mega_batch.to(device, dtype=torch.float32, non_blocking=True)
-
+            del mega_batch
             with torch.no_grad():
                 policies_gpu, values_gpu = model(mega_batch_gpu)
+            del mega_batch_gpu
 
         # .cpu() is blocking — synchronizes the stream implicitly
         policies = policies_gpu.cpu().numpy()
         values = values_gpu.cpu().numpy()
+        del policies_gpu, values_gpu
 
-        # Distribute results to workers
         cursor = 0
         for i, wid in enumerate(worker_ids):
             size = sizes[i]
             p_slice = policies[cursor : cursor + size]
             v_slice = values[cursor : cursor + size]
             cursor += size
-            
+
             if size == 1 and raw_tensors[i].ndim == 3:
                 self.output_queues[wid].put((p_slice[0], v_slice[0]))
             else:
@@ -74,27 +73,27 @@ class InferenceServer:
         
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.num_streams)
         print(f"Server Ready: Batch={self.batch_size}, Timeout={self.timeout}s, Streams={self.num_streams}, Device={self.device}")
-        
+
         last_successful_batch_time = time.time()
-        deadlock_timeout = 600   
-                            
+        deadlock_timeout = 600
+        pending_futures = []
+        batches_since_cache_clear = 0
+
         while True:
             batch_data = []
             current_time = time.time()
-            
+
             if current_time - last_successful_batch_time > deadlock_timeout:
                 print(f"🚨 DEADLOCK DETECTED: No batch processed in {deadlock_timeout}s")
                 return
-            
+
             current_batch_count = 0
             start_time = time.time()
-            
-            # Collect data until batch is full or timeout
+
             while current_batch_count < self.batch_size:
                 try:
                     item = self.input_queue.get(timeout=0.01)
                     if item == "STOP":
-                        # Flush any partial batch before shutting down
                         if batch_data:
                             stream = self.streams[self.current_stream_idx]
                             executor.submit(self.process_batch, batch_data, stream, model, self.device)
@@ -109,15 +108,22 @@ class InferenceServer:
                 except queue.Empty:
                     pass
 
-                # Flush partial batch on timeout regardless of size
                 if time.time() - start_time > self.timeout:
                     break
-            
+
             if batch_data:
                 stream = self.streams[self.current_stream_idx]
                 self.current_stream_idx = (self.current_stream_idx + 1) % self.num_streams
-                executor.submit(self.process_batch, batch_data, stream, model, self.device)
-                
+                fut = executor.submit(self.process_batch, batch_data, stream, model, self.device)
+                pending_futures.append(fut)
+
                 last_successful_batch_time = time.time()
-                effective_size = sum(item[1].shape[0] if item[1].ndim == 4 else 1 for item in batch_data)
-                # print(f"[Server] Batch: {len(batch_data)} requests, {effective_size} positions")
+                batches_since_cache_clear += 1
+
+                # Collect done futures to free batch_data references
+                pending_futures = [f for f in pending_futures if not f.done()]
+
+                # Periodically free CUDA allocator cache
+                if batches_since_cache_clear >= 200:
+                    torch.cuda.empty_cache()
+                    batches_since_cache_clear = 0
