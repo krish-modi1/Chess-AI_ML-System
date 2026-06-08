@@ -138,8 +138,8 @@ echo "  pip install complete."
 echo ""
 echo "[5/9] Checking model checkpoint..."
 
-MODEL_PATH="$CHESS_AI_DIR/game_engine/model/best_model.pth"
-GDRIVE_FILE_ID="${GDRIVE_MODEL_ID:-}"  # set GDRIVE_MODEL_ID after running pretrain_lichess.ipynb
+MODEL_PATH="$CHESS_AI_DIR/model/best_model.pth"
+GDRIVE_FILE_ID="${GDRIVE_MODEL_ID:-1FHQQI9hNmIxAZd6zmX6QO8oow5ekjgGs}"
 
 if [[ -f "$MODEL_PATH" ]]; then
   echo "  best_model.pth found ($(du -h "$MODEL_PATH" | cut -f1))"
@@ -162,7 +162,7 @@ fi
 echo ""
 echo "[6/9] Building C++ MCTS extension..."
 
-GAME_ENGINE_DIR="$CHESS_AI_DIR/game_engine"
+GAME_ENGINE_DIR="$CHESS_AI_DIR"
 PYBIND11_CMAKE_DIR=$(python3 -c "import pybind11; print(pybind11.get_cmake_dir())")
 PYTHON3_EXE=python3
 
@@ -244,11 +244,11 @@ echo ""
 
 if $BACKGROUND; then
   echo "  Running in background (nohup). PID will be written to logs/training.pid"
-  nohup python3 game_engine/main.py &
+  nohup python3 main.py &
   TRAIN_PID=$!
   echo "$TRAIN_PID" > "$CHESS_AI_DIR/logs/training.pid"
   echo "  Training started with PID $TRAIN_PID"
   echo "  Follow logs: tail -f $CHESS_AI_DIR/training_log.txt"
 else
-  python3 game_engine/main.py
+  python3 main.py
 fi
