@@ -120,23 +120,11 @@ fi
 echo ""
 echo "[4/9] Setting up Python environment..."
 
-CONDA_CHESSAI="$HOME/.conda/envs/chessai"
-
-if [[ -d "$CONDA_CHESSAI" ]]; then
-  echo "  Found conda env: $CONDA_CHESSAI"
-  # shellcheck disable=SC1090
-  CONDA_BASE=$(conda info --base 2>/dev/null || echo "$HOME/miniconda3")
-  source "$CONDA_BASE/etc/profile.d/conda.sh"
-  conda activate chessai
-  echo "  Activated conda env: chessai ($(python3 --version))"
-else
-  echo "  conda env 'chessai' not found — installing via pip to ~/.local"
-  echo "  Installing requirements (PyTorch CUDA 12.4 wheel)..."
-  pip install -q --user --break-system-packages \
-    --index-url https://download.pytorch.org/whl/cu124 \
-    -r "$CHESS_AI_DIR/requirements.txt"
-  echo "  pip install complete."
-fi
+echo "  Installing requirements (PyTorch CUDA 12.4 wheel)..."
+pip install -q --user --break-system-packages \
+  --index-url https://download.pytorch.org/whl/cu124 \
+  -r "$(dirname "$CHESS_AI_DIR")/requirements.txt"
+echo "  pip install complete. ($(python3 --version))"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 5. Model checkpoint
