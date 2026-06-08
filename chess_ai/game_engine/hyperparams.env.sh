@@ -16,23 +16,19 @@ export NUM_WORKERS=60
 #  ≥20 GB  A30 / V100-32  : WORKER_BATCH_SIZE=200, cap=6144
 #  ≥ 8 GB  T4 / V100-16   : WORKER_BATCH_SIZE=160, cap=4096
 #  < 8 GB  laptop (6 GB)  : WORKER_BATCH_SIZE=32,  cap=1536
-if   (( VRAM_MIB >= 35000 )); then
-  CUDA_STREAMS=8; VRAM_CAP=8192
-  # a2 instances (A100) are fixed at 12 vCPUs → 10 workers; larger WBS fills bigger batches
-  # and halves round-trips (800÷400=2 vs 800÷256=4) at no memory cost.
-  if (( NCPU <= 14 )); then WORKER_BATCH_SIZE=400
-  else                      WORKER_BATCH_SIZE=256
-  fi
-elif (( VRAM_MIB >= 20000 )); then WORKER_BATCH_SIZE=200; CUDA_STREAMS=6; VRAM_CAP=6144
-elif (( VRAM_MIB >=  8000 )); then WORKER_BATCH_SIZE=160; CUDA_STREAMS=4; VRAM_CAP=4096
-else                               WORKER_BATCH_SIZE=32;  CUDA_STREAMS=2; VRAM_CAP=1536
+if   (( VRAM_MIB >= 35000 )); then CUDA_STREAMS=8; VRAM_CAP=24000
+elif (( VRAM_MIB >= 20000 )); then CUDA_STREAMS=6; VRAM_CAP=16000
+elif (( VRAM_MIB >=  8000 )); then CUDA_STREAMS=4; VRAM_CAP=6000
+else                               CUDA_STREAMS=2; VRAM_CAP=1536
 fi
+
+# WORKER_BATCH_SIZE = VRAM_CAP / NUM_WORKERS so all workers fill exactly one inference
+# batch per MCTS round — no multi-round stalls regardless of worker count.
+WORKER_BATCH_SIZE=$(( VRAM_CAP / NUM_WORKERS ))
+(( WORKER_BATCH_SIZE < 1 )) && WORKER_BATCH_SIZE=1
 export WORKER_BATCH_SIZE CUDA_STREAMS
 
-# FIX: CUDA_BATCH_SIZE = min(max-concurrent-leaves, VRAM_CAP) so the inference
-# server batch always fills immediately — no 1-second timeout stall per MCTS round.
-MAX_CONCURRENT=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))
-export CUDA_BATCH_SIZE=$(( MAX_CONCURRENT < VRAM_CAP ? MAX_CONCURRENT : VRAM_CAP ))
+export CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))
 
 # FIX: 20 ms partial-batch flush (overrides the 1 s hardcoded default in main.py).
 export CUDA_TIMEOUT_INFERENCE=0.02
