@@ -30,8 +30,7 @@ echo "[1/9] Checking CUDA / GPU availability..."
 if ! command -v nvidia-smi &>/dev/null; then
   echo "[0/9] NVIDIA driver not found — installing for Ubuntu..."
   sudo apt-get update -qq
-  sudo apt-get install -y ubuntu-drivers-common linux-headers-$(uname -r)
-  sudo ubuntu-drivers autoinstall
+  sudo apt-get install -y nvidia-driver-550
   echo ""
   echo "================================================================"
   echo " Driver installed. A reboot is required to load the kernel module."
