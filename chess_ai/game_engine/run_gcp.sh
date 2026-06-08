@@ -115,33 +115,24 @@ if [[ ! -x "$STOCKFISH_PATH" ]]; then
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4. Python environment — Python 3.12 venv (system Python may be 3.13/3.14
-#    which has no PyTorch cu124 wheels)
+# 4. Python environment — venv from system Python, PyTorch cu126 wheels
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "[4/9] Setting up Python environment..."
 
 VENV_DIR="$HOME/.chess_ai_venv"
 
-if ! command -v python3.12 &>/dev/null; then
-  echo "  Python 3.12 not found — installing from deadsnakes PPA..."
-  sudo apt-get install -y software-properties-common
-  sudo add-apt-repository ppa:deadsnakes/ppa -y
-  sudo apt-get update -qq
-  sudo apt-get install -y python3.12 python3.12-dev python3.12-venv
-fi
-
 if [[ ! -d "$VENV_DIR" ]]; then
-  echo "  Creating Python 3.12 venv at $VENV_DIR..."
-  python3.12 -m venv "$VENV_DIR"
+  echo "  Creating venv at $VENV_DIR ($(python3 --version))..."
+  python3 -m venv "$VENV_DIR"
 fi
 
 source "$VENV_DIR/bin/activate"
 PYTHON="$VENV_DIR/bin/python3"
 
-echo "  Installing requirements (PyTorch CUDA 12.4 wheel)..."
+echo "  Installing requirements (PyTorch CUDA 12.6 wheel)..."
 pip install -q \
-  --index-url https://download.pytorch.org/whl/cu124 \
+  --index-url https://download.pytorch.org/whl/cu126 \
   -r "$(dirname "$CHESS_AI_DIR")/requirements.txt"
 echo "  pip install complete. ($("$PYTHON" --version))"
 
