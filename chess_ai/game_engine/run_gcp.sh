@@ -129,7 +129,6 @@ echo "[4/9] Installing Python dependencies ($(python3 --version))..."
 PYTHON="$(which python3)"  # used only for cmake PYTHON3_EXE below
 
 pip3 install -q --break-system-packages \
-  --index-url https://download.pytorch.org/whl/cu126 \
   -r "$(dirname "$CHESS_AI_DIR")/requirements.txt"
 echo "  pip install complete."
 
