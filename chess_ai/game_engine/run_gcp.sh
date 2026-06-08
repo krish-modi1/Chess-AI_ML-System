@@ -4,7 +4,31 @@
 set -euo pipefail
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 0. Resolve script directory so this works from any working directory
+# 0. Pre-flight: sudo access + git
+# ──────────────────────────────────────────────────────────────────────────────
+if ! sudo -n true 2>/dev/null && ! sudo -v 2>/dev/null; then
+  echo "ERROR: This script requires sudo access but your user lacks it."
+  echo ""
+  echo "Fix via GCP Console:"
+  echo "  IAM & Admin → IAM → find your account → Add role: 'Compute OS Admin Login'"
+  echo ""
+  echo "Fix via gcloud (run on your local machine):"
+  echo "  gcloud projects add-iam-policy-binding <PROJECT_ID> \\"
+  echo "    --member='user:<YOUR_GOOGLE_EMAIL>' \\"
+  echo "    --role='roles/compute.osAdminLogin'"
+  echo ""
+  echo "Then SSH back in and re-run this script."
+  exit 1
+fi
+
+# Ensure git is available (needed for future pulls; may not be pre-installed)
+if ! command -v git &>/dev/null; then
+  echo "[pre] git not found — installing..."
+  sudo apt-get update -qq && sudo apt-get install -y git
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 1. Resolve script directory so this works from any working directory
 # ──────────────────────────────────────────────────────────────────────────────
 CHESS_AI_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$CHESS_AI_DIR"
@@ -62,6 +86,7 @@ command -v cmake          &>/dev/null || MISSING_PKGS+=(cmake)
 command -v make           &>/dev/null || MISSING_PKGS+=(build-essential)
 command -v tmux           &>/dev/null || MISSING_PKGS+=(tmux)
 command -v nvtop          &>/dev/null || MISSING_PKGS+=(nvtop)
+command -v htop           &>/dev/null || MISSING_PKGS+=(htop)
 command -v git            &>/dev/null || MISSING_PKGS+=(git)
 dpkg -s python3-dev &>/dev/null 2>&1  || MISSING_PKGS+=(python3-dev)
 dpkg -s python3-pip &>/dev/null 2>&1  || MISSING_PKGS+=(python3-pip)
