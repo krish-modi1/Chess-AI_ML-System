@@ -193,7 +193,7 @@ echo "[7/9] Verifying C++ extension loads..."
 
 python3 - <<'PYCHECK'
 import sys, os
-sys.path.insert(0, os.path.join(os.getcwd(), "game_engine"))
+sys.path.insert(0, os.getcwd())
 import mcts_engine_cpp
 print(f"  mcts_engine_cpp loaded OK: {mcts_engine_cpp}")
 PYCHECK
