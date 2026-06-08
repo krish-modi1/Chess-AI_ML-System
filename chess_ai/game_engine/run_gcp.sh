@@ -242,13 +242,19 @@ echo " Launching training..."
 echo "============================================================"
 echo ""
 
+# Run from chess_ai/ so 'game_engine' package is importable.
+# PYTHONPATH also includes chess_ai/game_engine/ so bare 'import mcts_engine_cpp' finds the .so.
+PARENT_DIR="$(dirname "$CHESS_AI_DIR")"
+cd "$PARENT_DIR"
+export PYTHONPATH="$CHESS_AI_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
 if $BACKGROUND; then
   echo "  Running in background (nohup). PID will be written to logs/training.pid"
-  nohup python3 main.py &
+  nohup python3 -m game_engine.main >> "$CHESS_AI_DIR/training_log.txt" 2>&1 &
   TRAIN_PID=$!
   echo "$TRAIN_PID" > "$CHESS_AI_DIR/logs/training.pid"
   echo "  Training started with PID $TRAIN_PID"
   echo "  Follow logs: tail -f $CHESS_AI_DIR/training_log.txt"
 else
-  python3 main.py
+  python3 -m game_engine.main
 fi
