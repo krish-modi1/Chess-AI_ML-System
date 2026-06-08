@@ -121,26 +121,17 @@ if [[ ! -x "$STOCKFISH_PATH" ]]; then
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4. Python environment — venv from system Python, PyTorch cu126 wheels
+# 4. Python — install deps system-wide (dedicated server, no venv needed)
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "[4/9] Setting up Python environment..."
+echo "[4/9] Installing Python dependencies ($(python3 --version))..."
 
-VENV_DIR="$HOME/.chess_ai_venv"
+PYTHON="$(which python3)"  # used only for cmake PYTHON3_EXE below
 
-if [[ ! -d "$VENV_DIR" ]]; then
-  echo "  Creating venv at $VENV_DIR ($(python3 --version))..."
-  python3 -m venv "$VENV_DIR"
-fi
-
-source "$VENV_DIR/bin/activate"
-PYTHON="$VENV_DIR/bin/python3"
-
-echo "  Installing requirements (PyTorch CUDA 12.6 wheel)..."
-pip install -q \
+pip3 install -q --break-system-packages \
   --index-url https://download.pytorch.org/whl/cu126 \
   -r "$(dirname "$CHESS_AI_DIR")/requirements.txt"
-echo "  pip install complete. ($("$PYTHON" --version))"
+echo "  pip install complete."
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 5. Model checkpoint
@@ -173,8 +164,8 @@ echo ""
 echo "[6/9] Building C++ MCTS extension..."
 
 GAME_ENGINE_DIR="$CHESS_AI_DIR/game_engine"
-PYBIND11_CMAKE_DIR=$("$PYTHON" -c "import pybind11; print(pybind11.get_cmake_dir())")
-PYTHON3_EXE="$PYTHON"
+PYBIND11_CMAKE_DIR=$(python3 -c "import pybind11; print(pybind11.get_cmake_dir())")
+PYTHON3_EXE=python3
 
 cd "$GAME_ENGINE_DIR"
 rm -rf build
@@ -201,7 +192,7 @@ echo "  C++ extension built and copied to $GAME_ENGINE_DIR/"
 echo ""
 echo "[7/9] Verifying C++ extension loads..."
 
-"$PYTHON" - <<'PYCHECK'
+python3 - <<'PYCHECK'
 import sys, os
 sys.path.insert(0, os.path.join(os.getcwd(), "game_engine"))
 import mcts_engine_cpp
@@ -254,11 +245,11 @@ echo ""
 
 if $BACKGROUND; then
   echo "  Running in background (nohup). PID will be written to logs/training.pid"
-  nohup "$PYTHON" game_engine/main.py &
+  nohup python3 game_engine/main.py &
   TRAIN_PID=$!
   echo "$TRAIN_PID" > "$CHESS_AI_DIR/logs/training.pid"
   echo "  Training started with PID $TRAIN_PID"
   echo "  Follow logs: tail -f $CHESS_AI_DIR/training_log.txt"
 else
-  "$PYTHON" game_engine/main.py
+  python3 game_engine/main.py
 fi
