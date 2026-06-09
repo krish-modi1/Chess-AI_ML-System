@@ -204,7 +204,10 @@ def train_model(data_path="data/self_play",
         print("Skipping training (No Data).")
         return 0.0, 0.0
 
-    num_dl_workers = min(8, max(1, (os.cpu_count() or 4) // 4))
+    # Cap at 2 workers: 8 workers + persistent_workers + pin_memory presses ~3 GB
+    # of pinned RAM simultaneously (16 prefetch slots × ~200 MB/batch), causing OOM
+    # right after 60 self-play processes release their memory.
+    num_dl_workers = min(2, max(0, (os.cpu_count() or 4) // 8))
 
     val_size   = max(1, int(len(dataset) * 0.1))
     train_size = len(dataset) - val_size
@@ -215,13 +218,13 @@ def train_model(data_path="data/self_play",
 
     dataloader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=num_dl_workers, pin_memory=True,
-        persistent_workers=(num_dl_workers > 0),
+        num_workers=num_dl_workers, pin_memory=(num_dl_workers > 0),
+        persistent_workers=False,
     )
     val_dataloader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=num_dl_workers, pin_memory=True,
-        persistent_workers=(num_dl_workers > 0),
+        num_workers=num_dl_workers, pin_memory=(num_dl_workers > 0),
+        persistent_workers=False,
     )
 
     # 2. Load Model

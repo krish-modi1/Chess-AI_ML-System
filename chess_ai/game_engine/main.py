@@ -111,7 +111,7 @@ def cleanup_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration):
+def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration, games_counter=None):
     # Generate unique seed for this worker (same for python and C++ RNG)
     mcts_seed = int(time.time()) + worker_id
     np.random.seed(mcts_seed)  # Use same seed for numpy RNG
@@ -135,6 +135,18 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                         seed=mcts_seed)
     
     for i in range(game_limit):
+        # Pacing: don't start game i until no worker is more than MAX_WORKER_LEAD behind.
+        if games_counter is not None and i > 0:
+            wait_start = time.time()
+            while True:
+                min_done = min(games_counter)
+                if games_counter[worker_id] <= min_done + MAX_WORKER_LEAD:
+                    break
+                if time.time() - wait_start > 7200:
+                    print(f" [Worker {worker_id}] ⚠️ Pacing timeout (2h) — proceeding")
+                    break
+                time.sleep(0.5)
+
         print(f" [Worker {worker_id}] Starting Game {i+1}...")
 
         game_start = time.time()
@@ -204,11 +216,15 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
             print(f" [Worker {worker_id}] ❌ ERROR during game {i+1}: {e}")
             import traceback
             traceback.print_exc()
+            if games_counter is not None:
+                games_counter[worker_id] += 1
             continue
 
         if game_aborted or not game_data:
             print(f" [Worker {worker_id}] Game {i+1} aborted or empty — skipping save")
             gc.collect()
+            if games_counter is not None:
+                games_counter[worker_id] += 1
             continue
 
         if forced_draw:
@@ -235,8 +251,10 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                           values=np.array(values, dtype=np.int8))
 
         print(f" [Worker {worker_id}] Finished Game {i+1} in {time.time()-game_start:.1f}s | Total Moves {len(game.moves)} | Result {result}")
-        
+
         gc.collect()
+        if games_counter is not None:
+            games_counter[worker_id] += 1
 
 def run_server_wrapper(server):
     setup_child_logging()
@@ -291,7 +309,12 @@ STOCKFISH_ELO = int(os.environ.get("STOCKFISH_ELO", 1320))
 
 # --- RULES ---
 MAX_MOVES_PER_GAME = int(os.environ.get("MAX_MOVES_PER_GAME", 800))
-EVAL_MAX_MOVES_PER_GAME = int(os.environ.get("EVAL_MAX_MOVES_PER_GAME", 800)) 
+EVAL_MAX_MOVES_PER_GAME = int(os.environ.get("EVAL_MAX_MOVES_PER_GAME", 800))
+
+# --- WORKER PACING ---
+# Slow workers hold back fast ones: a worker won't start game N+1 until the
+# slowest worker has completed at least game (N+1 - MAX_WORKER_LEAD).
+MAX_WORKER_LEAD = int(os.environ.get("MAX_WORKER_LEAD", 3))
 
 current_iter = get_start_iteration(DATA_DIR) - 1
 
@@ -371,10 +394,12 @@ def run_self_play_phase(iteration):
     )
     monitor_thread.start()
 
+    games_counter = mp.Array('i', [0] * NUM_WORKERS)
+
     workers = []
     for i in range(NUM_WORKERS):
-        p = mp.Process(target=run_worker_batch, 
-                       args=(i, server.input_queue, worker_queues[i], GAMES_PER_WORKER, iteration))
+        p = mp.Process(target=run_worker_batch,
+                       args=(i, server.input_queue, worker_queues[i], GAMES_PER_WORKER, iteration, games_counter))
         p.start()
         workers.append(p)
         

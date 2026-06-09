@@ -96,7 +96,7 @@ class MCTSWorker:
     # NON-BLOCKING QUEUE POLLING
     # ═══════════════════════════════════════════════════════════════════════════
 
-    def _get_inference_result(self, timeout_ms=60000):
+    def _get_inference_result(self, timeout_ms=300000):
         """
         Poll for inference results with non-blocking timeout.
 
@@ -143,7 +143,7 @@ class MCTSWorker:
         self.input_queue.put((self.worker_id, batch_tensor))
 
         try:
-            policies, values = self._get_inference_result(timeout_ms=60000)
+            policies, values = self._get_inference_result(timeout_ms=300000)
         except TimeoutError:
             print(f"[Worker {self.worker_id}] ❌ Inference timeout in callback")
             return (
@@ -199,7 +199,7 @@ class MCTSWorker:
         self.input_queue.put((self.worker_id, root_tensor))
 
         try:
-            policy, value = self._get_inference_result(timeout_ms=60000)
+            policy, value = self._get_inference_result(timeout_ms=300000)
         except TimeoutError:
             print(f"[Worker {self.worker_id}] ❌ Server timeout - no root inference")
             raise RuntimeError("Server communication timeout")

@@ -75,7 +75,7 @@ class InferenceServer:
         print(f"Server Ready: Batch={self.batch_size}, Timeout={self.timeout}s, Streams={self.num_streams}, Device={self.device}")
 
         last_successful_batch_time = time.time()
-        deadlock_timeout = 600
+        deadlock_timeout = 1800
         pending_futures = []
         batches_since_cache_clear = 0
 
