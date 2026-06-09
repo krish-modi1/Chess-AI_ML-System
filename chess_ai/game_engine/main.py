@@ -138,10 +138,14 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
         # Pacing: don't start game i until no worker is more than MAX_WORKER_LEAD behind.
         if games_counter is not None and i > 0:
             wait_start = time.time()
+            pacing_logged = False
             while True:
                 min_done = min(games_counter)
                 if games_counter[worker_id] <= min_done + MAX_WORKER_LEAD:
                     break
+                if not pacing_logged:
+                    print(f" [Worker {worker_id}] ⏸ Pacing: waiting for slowest worker ({min_done} games done)")
+                    pacing_logged = True
                 if time.time() - wait_start > 7200:
                     print(f" [Worker {worker_id}] ⚠️ Pacing timeout (2h) — proceeding")
                     break
