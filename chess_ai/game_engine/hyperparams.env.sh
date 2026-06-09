@@ -8,7 +8,7 @@
 # Exports the full env-var contract consumed by game_engine/main.py.
 
 # 60 workers — oversubscribed (workers block on inference); 2 cores reserved for system/server.
-export NUM_WORKERS=60
+export NUM_WORKERS=30
 
 # VRAM tier → worker leaf batch per call, CUDA stream count, VRAM-safe batch cap.
 #
@@ -36,7 +36,7 @@ export CUDA_TIMEOUT_INFERENCE=0.02
 # Loop / eval / rules — identical on all platforms.
 export SIMULATIONS=800
 export EVAL_SIMULATIONS=800
-export GAMES_PER_WORKER=10
+export GAMES_PER_WORKER=20
 export ITERATIONS=1000
 export EVAL_WORKERS=10
 export GAMES_PER_EVAL_WORKER=4

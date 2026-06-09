@@ -318,7 +318,7 @@ EVAL_MAX_MOVES_PER_GAME = int(os.environ.get("EVAL_MAX_MOVES_PER_GAME", 800))
 # --- WORKER PACING ---
 # Slow workers hold back fast ones: a worker won't start game N+1 until the
 # slowest worker has completed at least game (N+1 - MAX_WORKER_LEAD).
-MAX_WORKER_LEAD = int(os.environ.get("MAX_WORKER_LEAD", 3))
+MAX_WORKER_LEAD = int(os.environ.get("MAX_WORKER_LEAD", 5))
 
 current_iter = get_start_iteration(DATA_DIR) - 1
 
