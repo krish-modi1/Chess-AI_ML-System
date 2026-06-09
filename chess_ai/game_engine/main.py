@@ -325,7 +325,7 @@ current_iter = get_start_iteration(DATA_DIR) - 1
 # Training
 TRAIN_EPOCHS = 4 
 TRAIN_WINDOW = 50
-TRAIN_BATCH_SIZE = 4096
+TRAIN_BATCH_SIZE = 2048
 TRAIN_LR = 0.001       
 
 # --- DRY WORKER WRAPPERS ---
@@ -456,7 +456,27 @@ def run_self_play_phase(iteration):
 
 def run_training_phase(iteration):
     print(f"\n=== ITERATION {iteration}: TRAINING PHASE ===")
-    cleanup_memory() # Clear VRAM before training
+    cleanup_memory()  # Clear VRAM before training
+
+    # Wait for the inference server subprocess's CUDA memory to be reclaimed by the
+    # GPU driver before allocating training tensors. The server process has exited by
+    # this point but the driver can take a few seconds to return pages to the free pool.
+    if torch.cuda.is_available():
+        free, total = torch.cuda.mem_get_info(0)
+        free_gb = free / (1024 ** 3)
+        if free_gb < 8.0:
+            print(f"  GPU: {free_gb:.1f}/{total/(1024**3):.1f} GB free — waiting for VRAM to drain...")
+            deadline = time.time() + 120
+            while time.time() < deadline:
+                time.sleep(5)
+                torch.cuda.empty_cache()
+                free, total = torch.cuda.mem_get_info(0)
+                free_gb = free / (1024 ** 3)
+                print(f"  GPU: {free_gb:.1f} GB free")
+                if free_gb >= 8.0:
+                    break
+            if free_gb < 8.0:
+                print(f"  ⚠️ VRAM did not drain after 120s — proceeding ({free_gb:.1f} GB free)")
     
     p_loss, v_loss = train_model(data_path=DATA_DIR,
                 input_model_path=BEST_MODEL,
