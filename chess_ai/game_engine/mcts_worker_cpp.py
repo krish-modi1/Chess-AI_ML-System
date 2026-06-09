@@ -19,6 +19,11 @@ import sys
 import os
 import time
 
+# Max wait for ONE inference round-trip (not per-move). Individual calls stay fast even with
+# heavy worker oversubscription — the server clears all pending workers in ~1 batch — so 300s
+# only ever fires on a genuinely dead/hung server. Env-tunable for safety under unusual load.
+_INFERENCE_TIMEOUT_MS = int(os.environ.get("INFERENCE_TIMEOUT_MS", 300000))
+
 sys.path.append(os.getcwd())
 
 import mcts_engine_cpp
@@ -85,6 +90,11 @@ class MCTSWorker:
         self.cpu = 1.0
         self.seed = seed
 
+        # Root NN value (P(win)-P(loss), side-to-move POV, in [-1,1]) from the most recent
+        # search(). Sim-independent (computed from the single root inference), so it stays a
+        # reliable "is this position decided?" signal even when simulations are reduced.
+        self.last_root_value = 0.0
+
         # History for current game — list of ChessBoard copies, most recent first.
         # Set by search() on each call; consumed by _batch_inference_callback.
         self._cpp_history = []
@@ -96,7 +106,7 @@ class MCTSWorker:
     # NON-BLOCKING QUEUE POLLING
     # ═══════════════════════════════════════════════════════════════════════════
 
-    def _get_inference_result(self, timeout_ms=300000):
+    def _get_inference_result(self, timeout_ms=_INFERENCE_TIMEOUT_MS):
         """
         Poll for inference results with non-blocking timeout.
 
@@ -143,7 +153,7 @@ class MCTSWorker:
         self.input_queue.put((self.worker_id, batch_tensor))
 
         try:
-            policies, values = self._get_inference_result(timeout_ms=300000)
+            policies, values = self._get_inference_result()
         except TimeoutError:
             print(f"[Worker {self.worker_id}] ❌ Inference timeout in callback")
             return (
@@ -199,7 +209,7 @@ class MCTSWorker:
         self.input_queue.put((self.worker_id, root_tensor))
 
         try:
-            policy, value = self._get_inference_result(timeout_ms=300000)
+            policy, value = self._get_inference_result()
         except TimeoutError:
             print(f"[Worker {self.worker_id}] ❌ Server timeout - no root inference")
             raise RuntimeError("Server communication timeout")
@@ -220,6 +230,7 @@ class MCTSWorker:
             v = v.unsqueeze(0)
         probs = torch.softmax(v, dim=1)
         value_f = float(probs[0, 0] - probs[0, 2])
+        self.last_root_value = value_f   # exposed for KataGo-style decided-game detection
 
         best_move, policy_vector = self.mcts_engine.search(
             cpp_root,
@@ -271,6 +282,7 @@ class MCTSWorker:
         policy_np = root_policy[0].cpu().numpy()
         root_value_probs = torch.softmax(root_value, dim=1)
         value_f = float(root_value_probs[0, 0] - root_value_probs[0, 2])
+        self.last_root_value = value_f   # exposed for KataGo-style decided-game detection
 
         best_move, policy_vector = self.mcts_engine.search(
             cpp_root,

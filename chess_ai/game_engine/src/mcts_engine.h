@@ -17,7 +17,7 @@
 namespace py = pybind11;
 
 constexpr float VIRTUAL_LOSS = 3.0f;
-constexpr float CPUCT_INIT = 1.0f;
+constexpr float CPUCT_INIT = 1.25f;   // AlphaZero value — more exploration → broader position coverage
 constexpr int CPUCT_BASE = 19652;
 constexpr float DIRICHLET_ALPHA = 0.3f;
 constexpr float DIRICHLET_FRAC = 0.25f;

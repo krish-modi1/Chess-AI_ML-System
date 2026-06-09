@@ -102,36 +102,43 @@ source "$GAME_ENGINE_DIR/hyperparams.env.sh"
 
 # ── Runtime-cost overrides (ONLY these differ from GCP) ───────────────────────
 # These change duration, not which code paths run.
-export ITERATIONS=1                                           # one full iteration to validate loop
-export EVAL_WORKERS=$(( PHYS_CORES > 4 ? 4 : PHYS_CORES ))  # keep arena eval short locally
-export GAMES_PER_EVAL_WORKER=1
-export STOCKFISH_GAMES=2
+export ITERATIONS=1                # one iteration: self-play → train (no eval)
+export GAMES_PER_WORKER=1          # 12 workers × 1 game = 12 self-play games (run in parallel)
+export TRAIN_EPOCHS=4              # train for 4 epochs on the generated data
+export SIMULATIONS=800             # match GCP
+export EVAL_SIMULATIONS=800
+export SKIP_EVAL=1                 # skip Phase 3 (arena + Stockfish eval)
 
-# ── Local CPU/GPU tuning (laptop-specific, NOT on GCP) ────────────────────────
-# 8 physical cores: 6 workers + 1 inference server + 1 main ≈ 1 process/core.
-# WORKER_BATCH_SIZE=64 → 800/64 = 12 GPU round-trips/move (vs 25 at batch=32).
-export NUM_WORKERS=6
-export WORKER_BATCH_SIZE=64
-export CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))  # 384, within 1536 VRAM cap
+# ── Local CPU/GPU tuning (this laptop: 16 logical cores, 6 GB GPU, 14 GB RAM) ──
+# WORKER_BATCH_SIZE = per-search leaf batch. KEEP SMALL: num_iterations = SIMULATIONS /
+# WORKER_BATCH_SIZE. batch=8 → 100 iterations (genuine MCTS refinement, matches GCP);
+# a large batch collapses the search to ~1 iteration (target ≈ prior, no learning signal).
+# Oversubscribe (16 logical cores): workers mostly block on the 100 inference round-trips/move,
+# so 12 workers keep the CPU busy and pool more leaves per inference (12×8 = 96/round).
+export NUM_WORKERS=12
+export WORKER_BATCH_SIZE=8
+export CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))  # 96
+# CRITICAL for small GPUs: TRAIN_BATCH_SIZE default (2048) is sized for the 22 GB L4 and
+# OOMs on 6 GB. Probed locally: batch=256 → 3.2 GB peak with AMP.
+export TRAIN_BATCH_SIZE=256
 
 echo ""
 echo "============================================================"
 echo " Run configuration (GCP replica)"
 echo "============================================================"
 echo "  GPU              : $GPU_NAME (${VRAM_GB} GB)"
-echo "  NUM_WORKERS      : $NUM_WORKERS   (${NCPU} logical − 2)"
+echo "  NUM_WORKERS      : $NUM_WORKERS"
 echo "  WORKER_BATCH_SIZE: $WORKER_BATCH_SIZE"
-echo "  CUDA_BATCH_SIZE  : $CUDA_BATCH_SIZE   (max concurrent: $(( NUM_WORKERS * WORKER_BATCH_SIZE )))"
+echo "  CUDA_BATCH_SIZE  : $CUDA_BATCH_SIZE"
 echo "  CUDA_STREAMS     : $CUDA_STREAMS"
 echo "  CUDA_TIMEOUT     : ${CUDA_TIMEOUT_INFERENCE}s"
-echo "  SIMULATIONS      : $SIMULATIONS"
-echo "  GAMES_PER_WORKER : $GAMES_PER_WORKER"
+echo "  SIMULATIONS      : $SIMULATIONS   (matches GCP)"
+echo "  GAMES_PER_WORKER : $GAMES_PER_WORKER   → $(( NUM_WORKERS * GAMES_PER_WORKER )) games total"
+echo "  TRAIN_EPOCHS     : $TRAIN_EPOCHS"
+echo "  TRAIN_BATCH_SIZE : $TRAIN_BATCH_SIZE   ← local override (GCP: 2048)"
 echo "  MAX_MOVES        : $MAX_MOVES_PER_GAME"
 echo "  ITERATIONS       : $ITERATIONS   ← local override (GCP: 1000)"
-echo "  EVAL_WORKERS     : $EVAL_WORKERS   ← local override (GCP: 10)"
-echo "  GAMES/EVAL_WORKER: $GAMES_PER_EVAL_WORKER   ← local override (GCP: 4)"
-echo "  STOCKFISH_GAMES  : $STOCKFISH_GAMES   ← local override (GCP: 50)"
-echo "  STOCKFISH_ELO    : $STOCKFISH_ELO"
+echo "  SKIP_EVAL        : $SKIP_EVAL   (1 = skip arena + Stockfish)"
 echo "  Log              : $CHESS_AI_DIR/training_log.txt"
 echo "============================================================"
 echo ""

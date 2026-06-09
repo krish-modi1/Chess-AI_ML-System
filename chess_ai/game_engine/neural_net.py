@@ -1,6 +1,7 @@
 import torch
 import torch.multiprocessing as mp
 import time
+import os
 import numpy as np
 import concurrent.futures
 import queue
@@ -75,7 +76,10 @@ class InferenceServer:
         print(f"Server Ready: Batch={self.batch_size}, Timeout={self.timeout}s, Streams={self.num_streams}, Device={self.device}")
 
         last_successful_batch_time = time.time()
-        deadlock_timeout = 1800
+        # Self-kill if the server processes NO batch for this long (a real hang). With heavy
+        # worker oversubscription the server is busier, not idle, so this won't fire in normal
+        # operation; env-tunable in case startup/wind-down windows ever need more slack.
+        deadlock_timeout = int(os.environ.get("SERVER_DEADLOCK_TIMEOUT", 1800))
         pending_futures = []
         batches_since_cache_clear = 0
 

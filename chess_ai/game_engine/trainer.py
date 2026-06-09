@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, Subset
 from tqdm import tqdm
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import numpy as np
@@ -13,16 +13,11 @@ import os
 import glob
 import sys
 import time
-import bisect
-import collections
 
 # Ensure we can import from the parent directory
 sys.path.append(os.getcwd())
 
 from game_engine.cnn import ChessCNN
-
-# Named tuple to store the file boundaries
-FileIndex = collections.namedtuple('FileIndex', ['file_path', 'start_idx', 'end_idx'])
 
 def _build_h_flip_perm():
     """
@@ -66,120 +61,137 @@ def _build_h_flip_perm():
 _H_FLIP_PERM = _build_h_flip_perm()
 
 class ChessDataset(Dataset):
-    def __init__(self, data_dir, window_size=20):
-        self.file_map = []  # Stores (file_path, start_index, end_index)
+    def __init__(self, data_dir, window_size=20, max_positions=2_000_000):
+        # max_positions cap: at float16, 2M positions ≈ 49 GB RAM regardless of
+        # game length. Without a cap, 20 iterations of 600 long games can exceed
+        # 100 GB. Newest-iteration files are loaded first so the cap drops oldest data.
         self.total_positions = 0
-        
+
         if not os.path.exists(data_dir):
             print(f"Warning: No data found in {data_dir}")
             return
 
-        # --- FOLDER-BASED SLIDING WINDOW LOGIC ---
-        # 1. Identify all 'iter_X' folders
-        subdirs = [d for d in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, d)) and d.startswith("iter_")]
-        
-        # 2. Sort by iteration number (ascending)
+        subdirs = [d for d in os.listdir(data_dir)
+                   if os.path.isdir(os.path.join(data_dir, d)) and d.startswith("iter_")]
         try:
             sorted_subdirs = sorted(subdirs, key=lambda x: int(x.split("_")[1]))
         except ValueError:
-            print("Warning: Could not parse iteration folders.")
             sorted_subdirs = []
 
-        # 3. Select the last N folders (Sliding Window)
         active_folders = sorted_subdirs[-window_size:] if sorted_subdirs else []
-        
         if not active_folders:
             print("No iteration data folders found.")
             return
 
         print(f"Data Window: Training on last {len(active_folders)} iterations: {active_folders[0]} to {active_folders[-1]}")
 
-        # 4. Collect all .npz files inside these folders
+        # Newest iteration first so position cap keeps the most recent data
         all_files = []
-        for folder in active_folders:
-            full_path = os.path.join(data_dir, folder)
-            all_files.extend(glob.glob(os.path.join(full_path, "*.npz")))
+        for folder in reversed(active_folders):
+            all_files.extend(glob.glob(os.path.join(data_dir, folder, "*.npz")))
 
-        print(f"Mapping {len(all_files)} data files...")
-        
+        # Pass 1: scan shapes → build load plan capped at max_positions.
+        # Pre-allocating avoids the 2× RAM spike of lists + np.concatenate.
+        print(f"Scanning {len(all_files)} data files (cap: {max_positions:,} positions)...")
+        load_plan = []  # [(path, n_to_take)]
+        remaining = max_positions
         for f in all_files:
+            if remaining <= 0:
+                break
             try:
-                # Use np.load with mmap_mode to quickly check shape without loading data
-                with np.load(f, allow_pickle=True) as data:
-                    s_shape = data['states'].shape
-                    p_shape = data['policies'].shape
-                    
-                    num_positions = s_shape[0]
-
-                    # Validation: Check shapes
-                    if len(s_shape) != 4 or s_shape[1:] != (120, 8, 8):
-                        print(f"Skipping corrupt file {f}: State shape {s_shape} != (120, 8, 8)")
-                        continue
-                        
-                    if len(p_shape) != 2 or p_shape[1] != 4672:
-                        print(f"Skipping corrupt file {f}: Policy shape {p_shape}")
-                        continue
-                    
-                    if num_positions > 0:
-                        start_idx = self.total_positions
-                        end_idx = self.total_positions + num_positions - 1
-                        
-                        self.file_map.append(FileIndex(f, start_idx, end_idx))
-                        self.total_positions += num_positions
-                        
+                with np.load(f, allow_pickle=True) as d:
+                    s_shape = d['states'].shape
+                    p_shape = d['policies'].shape
+                n = s_shape[0]
+                if (len(s_shape) != 4 or s_shape[1:] != (120, 8, 8) or
+                        len(p_shape) != 2 or p_shape[1] != 4672 or n == 0):
+                    print(f"Skipping corrupt file {f}: s={s_shape} p={p_shape}")
+                    continue
+                take = min(n, remaining)
+                load_plan.append((f, take))
+                remaining -= take
             except Exception as e:
-                print(f"Error checking {f}: {e}")
-                continue
+                print(f"Error scanning {f}: {e}")
 
-        # Precompute start indices for O(log N) bisect lookup
-        self._start_idxs = [fi.start_idx for fi in self.file_map]
+        total = sum(t for _, t in load_plan)
+        if total == 0:
+            return
 
-        # Cache for the currently loaded file
-        self._current_file = None
-        self._current_data = None
-        
-        print(f"Dataset Mapped: {self.total_positions} positions.")
+        # Pre-allocate float16 arrays: states/policies are 0-1 range so f16 is lossless
+        # for states (0/1 integers) and sufficient for policies (~4 sig figs).
+        # .float() in __getitem__ casts back to float32 for the model.
+        # Peak RAM = these arrays (~49 GB at 2M positions) + one file at a time (~30 MB).
+        _s = np.empty((total, 120, 8, 8), dtype=np.float16)
+        _p = np.empty((total, 4672),       dtype=np.float16)
+        _v = np.empty(total,               dtype=np.int64)
+        _g = np.empty(total,               dtype=np.int32)   # per-position game id (= file)
+
+        # Pass 2: fill pre-allocated arrays
+        print(f"Loading {total:,} positions into RAM...")
+        pos = 0
+        skipped = 0
+        game_id = 0
+        for f, take in load_plan:
+            try:
+                with np.load(f, allow_pickle=True) as d:
+                    s = d['states'][:take]
+                    p = d['policies'][:take]
+                    v = d['values'][:take]
+                # Loud guard: a temperature=0 overflow once silently filled policy
+                # targets with NaN, and the trainer's nan_to_num masked it. Fail fast
+                # and visibly here instead of training on corrupt targets again.
+                if not (np.isfinite(s).all() and np.isfinite(p).all()):
+                    skipped += 1
+                    continue
+                _s[pos:pos + take] = s
+                _p[pos:pos + take] = p
+                _v[pos:pos + take] = v.astype(np.int64)
+                _g[pos:pos + take] = game_id   # all positions in one file = one game
+                pos += take
+                game_id += 1
+            except Exception as e:
+                print(f"Error loading {f}: {e}")
+
+        if skipped:
+            print(f"  ⚠️ Skipped {skipped} file(s) with non-finite (NaN/Inf) data.")
+
+        # Slice to actually-filled rows: a skipped or failed file must never leave
+        # uninitialized np.empty garbage (which would train as NaN states / out-of-range
+        # value labels) in the dataset.
+        _s = _s[:pos]; _p = _p[:pos]; _v = _v[:pos]; _g = _g[:pos]
+        self._states   = torch.from_numpy(_s)
+        self._policies = torch.from_numpy(_p)
+        self._values   = torch.from_numpy(_v)
+        self._game_ids = _g            # numpy int32, one per position
+        self.num_games = game_id
+        self.total_positions = pos
+
+        ram_gb = (self._states.nbytes + self._policies.nbytes + self._values.nbytes) / 1e9
+        print(f"Dataset Mapped: {self.total_positions:,} positions ({ram_gb:.1f} GB RAM).")
 
     def __len__(self):
         return self.total_positions
 
-    def _load_file_for_index(self, idx):
-        # O(log N) bisect lookup
-        i = bisect.bisect_right(self._start_idxs, idx) - 1
-        if i < 0 or i >= len(self.file_map):
-            raise IndexError(f"Index {idx} out of range for file map.")
-        file_info = self.file_map[i]
-        target_file = file_info.file_path
-        local_idx = idx - file_info.start_idx
-
-        # Check if the file is already cached
-        if target_file != self._current_file:
-            with np.load(target_file, allow_pickle=True) as data:
-                self._current_data = {
-                    'states':   torch.from_numpy(data['states'].copy()),
-                    'policies': torch.from_numpy(data['policies'].copy()),
-                    'values':   torch.from_numpy(data['values'].astype(np.int64)),
-                }
-            self._current_file = target_file
-
-        return self._current_data, local_idx
-
-
     def __getitem__(self, idx):
-        data, local_idx = self._load_file_for_index(idx)
-
-        state = data['states'][local_idx]
-        policy = data['policies'][local_idx]
-        value = data['values'][local_idx]
+        state  = self._states[idx]
+        policy = self._policies[idx]
+        value  = self._values[idx]
 
         if torch.rand(1).item() < 0.5:
-            state = torch.flip(state, dims=[2])   # mirror a-file ↔ h-file
+            # Horizontal (file a<->h) mirror is a valid chess symmetry EXCEPT it swaps
+            # kingside<->queenside, so the castling-rights planes (112=WK,113=WQ,114=BK,
+            # 115=BQ) must be swapped to match the mirrored geometry. Without this, every
+            # position that still has castling rights becomes an inconsistent (illegal)
+            # encoding. Piece/en-passant planes mirror correctly under flip; side-to-move
+            # and clock planes are unaffected by a horizontal mirror.
+            state  = torch.flip(state, dims=[2])
+            state[[112, 113, 114, 115]] = state[[113, 112, 115, 114]]
             policy = policy[_H_FLIP_PERM]
 
         return {
-            'state': state.float(),
+            'state':  state.float(),
             'policy': policy.float(),
-            'value': value,  # int64 class index: 0=win, 1=draw, 2=loss
+            'value':  value,
         }
 
 def train_model(data_path="data/self_play",
@@ -204,17 +216,24 @@ def train_model(data_path="data/self_play",
         print("Skipping training (No Data).")
         return 0.0, 0.0
 
-    # Cap at 2 workers: 8 workers + persistent_workers + pin_memory presses ~3 GB
-    # of pinned RAM simultaneously (16 prefetch slots × ~200 MB/batch), causing OOM
-    # right after 60 self-play processes release their memory.
-    num_dl_workers = min(2, max(0, (os.cpu_count() or 4) // 8))
+    # Data is fully pre-loaded in RAM; workers only do flip augmentation (cheap).
+    # 4 workers on GCP 32-vCPU; 1 on 8-core laptop. Fork shares pages → no RAM multiplication.
+    num_dl_workers = min(4, max(0, (os.cpu_count() or 4) // 8))
 
-    val_size   = max(1, int(len(dataset) * 0.1))
-    train_size = len(dataset) - val_size
-    train_dataset, val_dataset = random_split(
-        dataset, [train_size, val_size],
-        generator=torch.Generator().manual_seed(42),
-    )
+    # Split by GAME, not by position. Consecutive positions within a game are nearly
+    # identical (one ply apart, same value label, correlated policy), so a position-level
+    # random_split leaks the same game into both train and val and silently inflates val
+    # metrics. Assigning whole games to val keeps the held-out set honest.
+    gids = dataset._game_ids
+    rng = np.random.default_rng(42)
+    n_val_games = max(1, int(dataset.num_games * 0.1))
+    val_games = rng.choice(dataset.num_games, size=n_val_games, replace=False)
+    val_mask = np.isin(gids, val_games)
+    val_idx   = np.nonzero(val_mask)[0]
+    train_idx = np.nonzero(~val_mask)[0]
+    train_dataset = Subset(dataset, train_idx)
+    val_dataset   = Subset(dataset, val_idx)
+    train_size, val_size = len(train_idx), len(val_idx)
 
     dataloader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
@@ -255,7 +274,10 @@ def train_model(data_path="data/self_play",
     model.train()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
-    total_steps = total_iterations * len(dataloader)
+    # scheduler.step() is called once per batch, i.e. epochs*len(dataloader) times per
+    # training phase, so T_max must include the epochs factor or the cosine completes its
+    # half-period ~epochs× too early and then oscillates back up (CosineAnnealingLR is periodic).
+    total_steps = total_iterations * epochs * len(dataloader)
     scheduler = CosineAnnealingLR(optimizer, T_max=max(total_steps, 1), eta_min=1e-6)
 
     if checkpoint is not None:

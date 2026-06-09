@@ -7,22 +7,28 @@ _PIECE_MAP = {
     chess.ROOK: 3, chess.QUEEN: 4, chess.KING: 5
 }
 
-def _fill_board_planes(tensor, board, offset):
+def _fill_board_planes(tensor, board, offset, include_repetition=True):
     """
     Write 14 planes into tensor starting at offset.
       offset+0..5  : White piece bitboards [P, N, B, R, Q, K]
       offset+6..11 : Black piece bitboards [P, N, B, R, Q, K]
       offset+12    : 1.0 if position has occurred >= 2 times in game history
       offset+13    : 1.0 if position has occurred >= 3 times in game history
+
+    include_repetition: set False for HISTORY frames. The C++ inference path rebuilds
+    history boards from FEN, which loses repetition state, so its history-frame rep planes
+    are always 0. To keep training and inference encodings identical we also zero them here
+    for history frames. (Frame 0 keeps repetition: C++ preserves it for the current board.)
     """
     for square, piece in board.piece_map().items():
         idx = offset + (0 if piece.color == chess.WHITE else 6) + _PIECE_MAP[piece.piece_type]
         tensor[idx, square // 8, square % 8] = 1.0
 
-    if board.is_repetition(2):
-        tensor[offset + 12, :, :] = 1.0
-    if board.is_repetition(3):
-        tensor[offset + 13, :, :] = 1.0
+    if include_repetition:
+        if board.is_repetition(2):
+            tensor[offset + 12, :, :] = 1.0
+        if board.is_repetition(3):
+            tensor[offset + 13, :, :] = 1.0
 
 
 class ChessGame:
@@ -104,10 +110,12 @@ class ChessGame:
         # Frame 0: current position
         _fill_board_planes(tensor, self.board, offset=0)
 
-        # Frames 1-7: history (zero-padded if history is short)
+        # Frames 1-7: history (zero-padded if history is short).
+        # include_repetition=False so history rep planes match the C++ inference path.
         if history:
             for i, hist_board in enumerate(history[:7]):
-                _fill_board_planes(tensor, hist_board, offset=14 * (i + 1))
+                _fill_board_planes(tensor, hist_board, offset=14 * (i + 1),
+                                   include_repetition=False)
 
         # Auxiliary planes (current position only)
         tensor[112, :, :] = float(self.board.has_kingside_castling_rights(chess.WHITE))

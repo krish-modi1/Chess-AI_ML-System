@@ -76,11 +76,15 @@ std::string MCTSNode::best_action() const {
 // === backpropagate() — C++ turn_player, no GIL crossing ===
 void MCTSEngine::backpropagate(const std::vector<std::shared_ptr<MCTSNode>>& path,
                                float value, float leaf_turn_player) {
-    auto leaf = path.back();
-    leaf->virtual_loss -= VIRTUAL_LOSS;
-    leaf->value_sum += VIRTUAL_LOSS;
-
     for (auto& node : path) {
+        // Undo the virtual loss added to EVERY node on this path during selection
+        // (see the selection loop). Removing it leaf-only — as the previous code did —
+        // left intermediate nodes permanently penalized within a batch, so all
+        // batch_size (e.g. 320) selections funneled down nearly the same path instead
+        // of diversifying. Whole-path add/remove is the standard leaf-parallel scheme.
+        node->virtual_loss -= VIRTUAL_LOSS;
+        node->value_sum    += VIRTUAL_LOSS;
+
         node->visit_count += 1;
         float turn_val = node->board.turn_player();   // pure C++ — no GIL crossing
         if (turn_val == leaf_turn_player) {
@@ -116,7 +120,7 @@ void MCTSEngine::add_dirichlet_noise(std::shared_ptr<MCTSNode>& root) {
     }
 }
 
-// === get_policy_vector() — unchanged ===
+// === get_policy_vector() ===
 py::array_t<float> MCTSEngine::get_policy_vector(const std::shared_ptr<MCTSNode>& root, float temperature) {
     std::vector<float> policy(4672, 0.0f);
     std::unordered_map<int, float> visits;
@@ -135,7 +139,22 @@ py::array_t<float> MCTSEngine::get_policy_vector(const std::shared_ptr<MCTSNode>
         counts.push_back(v);
     }
 
-    float exponent = (temperature > 1e-6f) ? 1.0f / temperature : 1e6f;
+    // Greedy (temperature → 0): one-hot on the most-visited move(s), split among ties.
+    // NOTE: the previous code used pow(count, 1e6) here, which overflows to inf for any
+    // visit count >= 2, making total=inf and count/total = inf/inf = NaN. That corrupted
+    // every policy target after the temperature schedule drops to 0.
+    if (temperature < 1e-6f) {
+        float max_c = *std::max_element(counts.begin(), counts.end());
+        int n_max = 0;
+        for (float c : counts) if (c == max_c) n_max++;
+        for (size_t i = 0; i < indices.size(); i++) {
+            policy[indices[i]] = (counts[i] == max_c) ? 1.0f / n_max : 0.0f;
+        }
+        return py::array_t<float>(4672, policy.data());
+    }
+
+    // Temperature scaling: count^(1/T), normalized.
+    float exponent = 1.0f / temperature;
     float total = 0.0f;
     for (auto& c : counts) {
         c = std::pow(c, exponent);
@@ -255,7 +274,10 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::search(
                 std::uniform_real_distribution<float> epsilon_dist(0.0f, 1.0f);
                 constexpr float epsilon = 0.05f;
 
-                if (epsilon_dist(rng) < epsilon && node->children.size() > 1) {
+                // Epsilon-greedy is an exploration aid for self-play only. Gate it on
+                // use_dirichlet so evaluation/arena (use_dirichlet=false) plays deterministic
+                // PUCT — otherwise 5% random selections add noise to strength/ELO measurements.
+                if (use_dirichlet && epsilon_dist(rng) < epsilon && node->children.size() > 1) {
                     std::uniform_int_distribution<int> child_dist(0, node->children.size() - 1);
                     int random_idx = child_dist(rng);
                     auto it = node->children.begin();
@@ -269,8 +291,13 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::search(
                 }
             }
 
-            node->virtual_loss += VIRTUAL_LOSS;
-            node->value_sum -= VIRTUAL_LOSS;
+            // Apply virtual loss to EVERY node on the path (not just the leaf) so the
+            // next selection in this batch is steered away from the whole explored path,
+            // not only its tip. Removed again in backpropagate().
+            for (auto& n : path) {
+                n->virtual_loss += VIRTUAL_LOSS;
+                n->value_sum    -= VIRTUAL_LOSS;
+            }
 
             if (node->board.is_over()) {                       // pure C++ — no GIL crossing
                 float tp = node->board.turn_player();

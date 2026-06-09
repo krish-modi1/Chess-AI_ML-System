@@ -36,7 +36,11 @@ class TimeoutHandler:
         if self.start_time:
             signal.alarm(self.timeout_seconds)
 
-timeout_handler = TimeoutHandler(timeout_seconds=108000)
+# Per-iteration deadlock guard (SIGALRM), reset after each iteration completes. With the small
+# WORKER_BATCH_SIZE the search now does ~100 inference round-trips/move, so draw-heavy iterations
+# (games up to MAX_MOVES_PER_GAME) run far longer than under the old 1-round-trip config. Default
+# 48h gives margin over a worst-case long iteration while still catching a genuine hang. Env-tunable.
+timeout_handler = TimeoutHandler(timeout_seconds=int(os.environ.get("ITERATION_TIMEOUT", 172800)))
 
 # Ensure project root is in path
 sys.path.append(os.getcwd())
@@ -163,6 +167,10 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
 
         # Reset MCTS tree cache at game start so we never carry state across games.
         worker.reset_cache()
+        # Restore full simulations (a previous game may have reduced them once decided).
+        worker.mcts_engine.simulations = SIMULATIONS
+        decided_streak = 0
+        reduced_mode = False
         game_aborted = False
 
         try:
@@ -184,6 +192,21 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                 best_move, mcts_policy = worker.search(
                     game, temperature=current_temp, history=history_snapshot
                 )
+
+                # KataGo-style decided-game detection: if the position has been lopsided for
+                # DECIDED_PATIENCE consecutive moves, cap sims for the rest of the game (still
+                # played to completion — no resignation, so labels stay honest).
+                if not reduced_mode:
+                    if abs(worker.last_root_value) >= DECIDED_VALUE_THRESHOLD:
+                        decided_streak += 1
+                    else:
+                        decided_streak = 0
+                    if decided_streak >= DECIDED_PATIENCE:
+                        worker.mcts_engine.simulations = REDUCED_SIMULATIONS
+                        reduced_mode = True
+                        print(f" [Worker {worker_id}] Game {i+1} move {move_count}: decided "
+                              f"(|v|={abs(worker.last_root_value):.2f}) — sims "
+                              f"{SIMULATIONS}→{REDUCED_SIMULATIONS} to completion")
 
                 # Capture state and turn BEFORE push — MCTS searched this position.
                 # Storing post-push state would mismatch the policy targets.
@@ -214,8 +237,12 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
 
                 
                 dur = time.time() - move_start
-                nps = SIMULATIONS / dur if dur > 0 else 0
-                print(f" [Worker {worker_id}] Move {move_count+1}: {best_move} ({dur:.2f}s | {nps:.0f} sim/s)")
+                # Use the engine's CURRENT sim count, not the module constant — KataGo
+                # decided-game reduction may have lowered it, so SIMULATIONS would over-report.
+                cur_sims = worker.mcts_engine.simulations
+                nps = cur_sims / dur if dur > 0 else 0
+                print(f" [Worker {worker_id}] Move {move_count+1}: {best_move} "
+                      f"({dur:.2f}s | {nps:.0f} sim/s | {cur_sims} sims)")
         except Exception as e:
             print(f" [Worker {worker_id}] ❌ ERROR during game {i+1}: {e}")
             import traceback
@@ -305,11 +332,23 @@ GAMES_PER_WORKER = int(os.environ.get("GAMES_PER_WORKER", 2))
 SIMULATIONS = int(os.environ.get("SIMULATIONS", 1600))
 EVAL_SIMULATIONS = int(os.environ.get("EVAL_SIMULATIONS", 1600))
 
+# --- KataGo-style decided-game playout (self-play only) ---
+# When the root value has been lopsided (|P(win)-P(loss)| >= DECIDED_VALUE_THRESHOLD) for
+# DECIDED_PATIENCE consecutive moves, cap simulations at REDUCED_SIMULATIONS for the rest of
+# the game. The game is PLAYED TO COMPLETION (no resignation) so value labels stay honest —
+# KataGo found resignation records positions incorrectly; reducing visits just finishes decided
+# games cheaply. Set DECIDED_PATIENCE huge to disable.
+DECIDED_VALUE_THRESHOLD = float(os.environ.get("DECIDED_VALUE_THRESHOLD", 0.9))
+DECIDED_PATIENCE = int(os.environ.get("DECIDED_PATIENCE", 5))
+REDUCED_SIMULATIONS = int(os.environ.get("REDUCED_SIMULATIONS", 100))
+
 # --- EVALUATION CONFIG ---
 EVAL_WORKERS = int(os.environ.get("EVAL_WORKERS", 10))
 GAMES_PER_EVAL_WORKER = int(os.environ.get("GAMES_PER_EVAL_WORKER", 4))
 STOCKFISH_GAMES = int(os.environ.get("STOCKFISH_GAMES", 20))
 STOCKFISH_ELO = int(os.environ.get("STOCKFISH_ELO", 1320))
+# Skip Phase 3 (arena + Stockfish eval) entirely — for local self-play/train validation.
+SKIP_EVAL = os.environ.get("SKIP_EVAL", "0") == "1"
 
 # --- RULES ---
 MAX_MOVES_PER_GAME = int(os.environ.get("MAX_MOVES_PER_GAME", 800))
@@ -323,10 +362,12 @@ MAX_WORKER_LEAD = int(os.environ.get("MAX_WORKER_LEAD", 5))
 current_iter = get_start_iteration(DATA_DIR) - 1
 
 # Training
-TRAIN_EPOCHS = 4 
-TRAIN_WINDOW = 50
-TRAIN_BATCH_SIZE = 2048
-TRAIN_LR = 0.001       
+TRAIN_EPOCHS = int(os.environ.get("TRAIN_EPOCHS", 4))
+TRAIN_WINDOW = int(os.environ.get("TRAIN_WINDOW", 50))
+# TRAIN_BATCH_SIZE is sized for the 22 GB L4 (uses ~20 GB). Override low (e.g. 128) for
+# small local GPUs — backprop activation memory across 20 blocks scales with batch size.
+TRAIN_BATCH_SIZE = int(os.environ.get("TRAIN_BATCH_SIZE", 2048))
+TRAIN_LR = float(os.environ.get("TRAIN_LR", 0.001))
 
 # --- DRY WORKER WRAPPERS ---
 
@@ -464,8 +505,12 @@ def run_training_phase(iteration):
     if torch.cuda.is_available():
         free, total = torch.cuda.mem_get_info(0)
         free_gb = free / (1024 ** 3)
-        if free_gb < 8.0:
-            print(f"  GPU: {free_gb:.1f}/{total/(1024**3):.1f} GB free — waiting for VRAM to drain...")
+        total_gb = total / (1024 ** 3)
+        # Target enough free VRAM for training. 8 GB suits the 22 GB L4; on a small GPU
+        # (e.g. 6 GB laptop) 8 GB is unreachable, so scale to 70% of total. Env-overridable.
+        target_gb = float(os.environ.get("VRAM_DRAIN_TARGET_GB", min(8.0, total_gb * 0.7)))
+        if free_gb < target_gb:
+            print(f"  GPU: {free_gb:.1f}/{total_gb:.1f} GB free — waiting for VRAM to drain (target {target_gb:.1f})...")
             deadline = time.time() + 120
             while time.time() < deadline:
                 time.sleep(5)
@@ -473,9 +518,9 @@ def run_training_phase(iteration):
                 free, total = torch.cuda.mem_get_info(0)
                 free_gb = free / (1024 ** 3)
                 print(f"  GPU: {free_gb:.1f} GB free")
-                if free_gb >= 8.0:
+                if free_gb >= target_gb:
                     break
-            if free_gb < 8.0:
+            if free_gb < target_gb:
                 print(f"  ⚠️ VRAM did not drain after 120s — proceeding ({free_gb:.1f} GB free)")
     
     p_loss, v_loss = train_model(data_path=DATA_DIR,
@@ -697,19 +742,24 @@ if __name__ == "__main__":
                 break
             
             # === PHASE 3: EVALUATION ===
-            print(f"\n{'='*60}")
-            print(f"ITERATION {it} - PHASE 3: EVALUATION")
-            print(f"{'='*60}")
-            
-            try:
-                run_evaluation_phase(it, MetricsLogger(), p_loss, v_loss)
-                print(f"\n✅ ITERATION {it} - PHASE 3 COMPLETE")
-            except Exception as e:
-                print(f"\n❌ ITERATION {it} - PHASE 3 FAILED: {e}")
-                if killer.kill_now:
-                    print("[Main] Kill signal during Phase 3. Exiting...")
-                    break
-                raise
+            if SKIP_EVAL:
+                print(f"\n{'='*60}")
+                print(f"ITERATION {it} - PHASE 3: EVALUATION SKIPPED (SKIP_EVAL=1)")
+                print(f"{'='*60}")
+            else:
+                print(f"\n{'='*60}")
+                print(f"ITERATION {it} - PHASE 3: EVALUATION")
+                print(f"{'='*60}")
+
+                try:
+                    run_evaluation_phase(it, MetricsLogger(), p_loss, v_loss)
+                    print(f"\n✅ ITERATION {it} - PHASE 3 COMPLETE")
+                except Exception as e:
+                    print(f"\n❌ ITERATION {it} - PHASE 3 FAILED: {e}")
+                    if killer.kill_now:
+                        print("[Main] Kill signal during Phase 3. Exiting...")
+                        break
+                    raise
             
             # === ITERATION COMPLETE ===
             iter_end = time.time()
