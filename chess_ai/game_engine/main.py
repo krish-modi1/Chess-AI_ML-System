@@ -222,6 +222,7 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
         # Restore full simulations (a previous game may have reduced them once decided).
         worker.mcts_engine.simulations = SIMULATIONS
         decided_streak = 0
+        noprogress_streak = 0
         reduced_mode = False
         game_aborted = False
 
@@ -258,6 +259,25 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                         reduced_mode = True
                         print(f" [Worker {worker_id}] Game {i+1} move {move_count}: decided "
                               f"(|v|={abs(worker.last_root_value):.2f}) — sims "
+                              f"{SIMULATIONS}→{REDUCED_SIMULATIONS} to completion")
+
+                    # No-progress (dead-draw) cut: the decided cut above only catches WON games
+                    # (|v|>=threshold). A long game whose value sits NEAR ZERO is a shuffling draw
+                    # heading to MAX_MOVES that no value threshold can catch — once it's gone
+                    # NOPROGRESS_MIN_MOVES and stayed within ±NOPROGRESS_VALUE_BAND for
+                    # NOPROGRESS_PATIENCE consecutive moves, cap sims for the rest. Still played to
+                    # completion (honest labels), MAX_MOVES unchanged. (Mutually exclusive with the
+                    # decided cut: |v| can't be both >=0.9 and <0.2 in the same move.)
+                    if abs(worker.last_root_value) < NOPROGRESS_VALUE_BAND:
+                        noprogress_streak += 1
+                    else:
+                        noprogress_streak = 0
+                    if (not reduced_mode and move_count >= NOPROGRESS_MIN_MOVES
+                            and noprogress_streak >= NOPROGRESS_PATIENCE):
+                        worker.mcts_engine.simulations = REDUCED_SIMULATIONS
+                        reduced_mode = True
+                        print(f" [Worker {worker_id}] Game {i+1} move {move_count}: no-progress draw "
+                              f"(|v|<{NOPROGRESS_VALUE_BAND} for {NOPROGRESS_PATIENCE} moves) — sims "
                               f"{SIMULATIONS}→{REDUCED_SIMULATIONS} to completion")
 
                 # Capture state and turn BEFORE push — MCTS searched this position.
@@ -401,6 +421,16 @@ EVAL_SIMULATIONS = int(os.environ.get("EVAL_SIMULATIONS", 1600))
 DECIDED_VALUE_THRESHOLD = float(os.environ.get("DECIDED_VALUE_THRESHOLD", 0.9))
 DECIDED_PATIENCE = int(os.environ.get("DECIDED_PATIENCE", 5))
 REDUCED_SIMULATIONS = int(os.environ.get("REDUCED_SIMULATIONS", 100))
+
+# --- No-progress (dead-draw) cut (self-play only) ---
+# The decided-game cut above only fires on WON positions (|value| high). Long DRAWN games have
+# value ≈ 0 — no threshold catches them, so they grind full sims to MAX_MOVES. This cuts them:
+# once a game passes NOPROGRESS_MIN_MOVES AND its root value has stayed within ±NOPROGRESS_VALUE_BAND
+# for NOPROGRESS_PATIENCE consecutive moves (a shuffling stalemate), cap sims at REDUCED_SIMULATIONS
+# for the rest. Game is still played to completion; MAX_MOVES_PER_GAME is unchanged.
+NOPROGRESS_MIN_MOVES  = int(os.environ.get("NOPROGRESS_MIN_MOVES", 250))
+NOPROGRESS_VALUE_BAND = float(os.environ.get("NOPROGRESS_VALUE_BAND", 0.2))
+NOPROGRESS_PATIENCE   = int(os.environ.get("NOPROGRESS_PATIENCE", 30))
 
 # --- EVALUATION CONFIG ---
 EVAL_WORKERS = int(os.environ.get("EVAL_WORKERS", 10))
