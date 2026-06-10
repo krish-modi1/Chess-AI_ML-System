@@ -72,6 +72,8 @@ export CUDA_STREAMS=2
 export SHM_TRANSPORT=1
 export TRAIN_EPOCHS=4
 export TRAIN_BATCH_SIZE=256
+export TRAIN_DL_WORKERS=4           # GCP uses 16; local data is tiny
+export TRAIN_DL_PREFETCH=1          # GCP uses 4; local RAM is tight
 
 # ── Eval: run the FULL pipeline (the point of this test) ──────────────────────
 export SKIP_EVAL=0

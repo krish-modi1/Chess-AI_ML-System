@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, Subset
+from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import numpy as np
@@ -61,63 +61,69 @@ def _build_h_flip_perm():
 
 _H_FLIP_PERM = _build_h_flip_perm()
 
-class ChessDataset(Dataset):
-    def __init__(self, data_dir, window_size=20, max_positions=None):
-        # Policy = train on the last `window_size` iterations. `max_positions` is now only a
-        # RAM-SAFETY CEILING (not an arbitrary cap): at float16 a position is ~24.7 KB, so a
-        # 126 GB box holds ~5 M positions. 20 iterations of long games CAN exceed that, so we
-        # cap at MAX_TRAIN_POSITIONS (default 4.5 M ≈ 110 GB) which only binds if the window
-        # would OOM — i.e. "last 20 iterations, or the most-recent ~4.5 M positions if too big".
-        # Newest-iteration files load first, so the ceiling drops the OLDEST data.
-        if max_positions is None:
-            max_positions = int(os.environ.get("MAX_TRAIN_POSITIONS", 4_500_000))
-        self.total_positions = 0
-
-        if not os.path.exists(data_dir):
-            print(f"Warning: No data found in {data_dir}")
-            return
-
-        subdirs = [d for d in os.listdir(data_dir)
-                   if os.path.isdir(os.path.join(data_dir, d)) and d.startswith("iter_")]
+def scan_window_files(data_dir, window_size=20):
+    """Scan the last `window_size` iteration folders and return [(path, n_positions)] for every
+    valid .npz, NEWEST-iteration-first (so a downstream cap/chunk keeps the most recent data).
+    Shape-validates each file (states (N,120,8,8), policies (N,4672)); skips corrupt/empty."""
+    if not os.path.exists(data_dir):
+        print(f"Warning: No data found in {data_dir}")
+        return []
+    subdirs = [d for d in os.listdir(data_dir)
+               if os.path.isdir(os.path.join(data_dir, d)) and d.startswith("iter_")]
+    try:
+        sorted_subdirs = sorted(subdirs, key=lambda x: int(x.split("_")[1]))
+    except ValueError:
+        sorted_subdirs = []
+    active_folders = sorted_subdirs[-window_size:] if sorted_subdirs else []
+    if not active_folders:
+        print("No iteration data folders found.")
+        return []
+    print(f"Data Window: last {len(active_folders)} iterations: {active_folders[0]} to {active_folders[-1]}")
+    all_files = []
+    for folder in reversed(active_folders):            # newest iteration first
+        all_files.extend(glob.glob(os.path.join(data_dir, folder, "*.npz")))
+    plan = []
+    for f in all_files:
         try:
-            sorted_subdirs = sorted(subdirs, key=lambda x: int(x.split("_")[1]))
-        except ValueError:
-            sorted_subdirs = []
+            with np.load(f, allow_pickle=True) as d:
+                s_shape = d['states'].shape
+                p_shape = d['policies'].shape
+            n = s_shape[0]
+            if (len(s_shape) != 4 or s_shape[1:] != (120, 8, 8) or
+                    len(p_shape) != 2 or p_shape[1] != 4672 or n == 0):
+                print(f"Skipping corrupt file {f}: s={s_shape} p={p_shape}")
+                continue
+            plan.append((f, n))
+        except Exception as e:
+            print(f"Error scanning {f}: {e}")
+    return plan
 
-        active_folders = sorted_subdirs[-window_size:] if sorted_subdirs else []
-        if not active_folders:
-            print("No iteration data folders found.")
-            return
 
-        print(f"Data Window: Training on last {len(active_folders)} iterations: {active_folders[0]} to {active_folders[-1]}")
+class ChessDataset(Dataset):
+    def __init__(self, data_dir, window_size=20, max_positions=None, file_plan=None):
+        # Two load modes:
+        #  • file_plan=None (default): scan the last `window_size` iters newest-first and cap at
+        #    max_positions (MAX_TRAIN_POSITIONS — a RAM ceiling, ~24.7 KB/position in f16). Used
+        #    when the whole training set is loaded in one shot.
+        #  • file_plan=[(path, n_take), …]: load EXACTLY those files (one RAM chunk), no cap. The
+        #    chunked trainer uses this to sweep a window larger than RAM across several loads.
+        self.total_positions = 0
+        self.num_games = 0
+        self._game_ids = np.empty(0, dtype=np.int32)
 
-        # Newest iteration first so position cap keeps the most recent data
-        all_files = []
-        for folder in reversed(active_folders):
-            all_files.extend(glob.glob(os.path.join(data_dir, folder, "*.npz")))
-
-        # Pass 1: scan shapes → build load plan capped at max_positions.
-        # Pre-allocating avoids the 2× RAM spike of lists + np.concatenate.
-        print(f"Scanning {len(all_files)} data files (cap: {max_positions:,} positions)...")
-        load_plan = []  # [(path, n_to_take)]
-        remaining = max_positions
-        for f in all_files:
-            if remaining <= 0:
-                break
-            try:
-                with np.load(f, allow_pickle=True) as d:
-                    s_shape = d['states'].shape
-                    p_shape = d['policies'].shape
-                n = s_shape[0]
-                if (len(s_shape) != 4 or s_shape[1:] != (120, 8, 8) or
-                        len(p_shape) != 2 or p_shape[1] != 4672 or n == 0):
-                    print(f"Skipping corrupt file {f}: s={s_shape} p={p_shape}")
-                    continue
+        if file_plan is None:
+            if max_positions is None:
+                max_positions = int(os.environ.get("MAX_TRAIN_POSITIONS", 4_500_000))
+            scan = scan_window_files(data_dir, window_size)
+            load_plan, remaining = [], max_positions
+            for f, n in scan:
+                if remaining <= 0:
+                    break
                 take = min(n, remaining)
                 load_plan.append((f, take))
                 remaining -= take
-            except Exception as e:
-                print(f"Error scanning {f}: {e}")
+        else:
+            load_plan = file_plan
 
         total = sum(t for _, t in load_plan)
         if total == 0:
@@ -216,43 +222,74 @@ def train_model(data_path="data/self_play",
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on {device}...")
 
-    # 1. Prepare Data with Sliding Window
-    dataset = ChessDataset(data_path, window_size=window_size)
-    if len(dataset) == 0:
+    # 1. Plan the sliding window at FILE granularity (newest-iteration-first).
+    plan = scan_window_files(data_path, window_size)           # [(path, n_positions)]
+    total_window = sum(n for _, n in plan)
+    if total_window == 0:
         print("Skipping training (No Data).")
         return 0.0, 0.0
 
-    # Data is fully pre-loaded in RAM; workers only do flip augmentation + f16→f32 cast.
-    # During training the self-play server is dead, so all vCPUs are free. One worker can't
-    # produce a 2048-batch as fast as the GPU consumes it, so scale up: 8 on GCP 32-vCPU,
-    # 2 on laptop. Beyond ~8 the GPU compute is the ceiling and extra workers idle.
-    # Fork shares the read-only f16 buffers (COW) → no RAM multiplication.
-    num_dl_workers = min(8, max(2, (os.cpu_count() or 4) // 4))
-
-    # Split by GAME, not by position. Consecutive positions within a game are nearly
-    # identical (one ply apart, same value label, correlated policy), so a position-level
-    # random_split leaks the same game into both train and val and silently inflates val
-    # metrics. Assigning whole games to val keeps the held-out set honest.
-    gids = dataset._game_ids
+    # Hold out ~10% of FILES as a disjoint val set. One .npz == one game, so a file-level split
+    # IS a game-level split → no position from a val game leaks into train (honest val metrics).
     rng = np.random.default_rng(42)
-    n_val_games = max(1, int(dataset.num_games * 0.1))
-    val_games = rng.choice(dataset.num_games, size=n_val_games, replace=False)
-    val_mask = np.isin(gids, val_games)
-    val_idx   = np.nonzero(val_mask)[0]
-    train_idx = np.nonzero(~val_mask)[0]
-    train_dataset = Subset(dataset, train_idx)
-    val_dataset   = Subset(dataset, val_idx)
-    train_size, val_size = len(train_idx), len(val_idx)
+    n_files = len(plan)
+    n_val_files = max(1, int(n_files * 0.1)) if n_files > 1 else 0
+    val_sel = set(rng.choice(n_files, size=n_val_files, replace=False).tolist()) if n_val_files else set()
+    val_plan   = [plan[i] for i in range(n_files) if i in val_sel]
+    train_plan = [plan[i] for i in range(n_files) if i not in val_sel]
 
-    # persistent_workers=True: workers spawn ONCE and survive across the 4 epochs (was
-    # respawning every epoch, which dominated the few seconds of compute in early iterations
-    # with tiny datasets). prefetch_factor=4: each worker keeps 4 batches ready → smooth GPU feed.
-    _dl_kw = dict(num_workers=num_dl_workers, pin_memory=(num_dl_workers > 0),
-                  persistent_workers=(num_dl_workers > 0))
-    if num_dl_workers > 0:
-        _dl_kw['prefetch_factor'] = 4
-    dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, **_dl_kw)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, **_dl_kw)
+    # RAM-aware chunking: partition the train files into chunks of <= TRAIN_CHUNK_POSITIONS each
+    # (whole files only — a game is never split). If the whole window fits in one chunk this is a
+    # single in-RAM load (old behaviour). If it's larger, every epoch sweeps ALL chunks
+    # (load → train → free), so the entire last-`window_size` iterations get trained on instead
+    # of the oldest positions being silently dropped by a hard cap.
+    chunk_cap = int(os.environ.get("TRAIN_CHUNK_POSITIONS", 3_000_000))
+    # Keep the persistent val set within one RAM chunk (10% of a very large window could itself
+    # exceed RAM; trim by whole files if so).
+    if sum(n for _, n in val_plan) > chunk_cap:
+        trimmed, cum = [], 0
+        for f, n in val_plan:
+            if trimmed and cum + n > chunk_cap:
+                break
+            trimmed.append((f, n)); cum += n
+        val_plan = trimmed
+    train_chunks, cur, cur_n = [], [], 0
+    for f, n in train_plan:
+        if cur and cur_n + n > chunk_cap:
+            train_chunks.append(cur); cur, cur_n = [], 0
+        cur.append((f, n)); cur_n += n
+    if cur:
+        train_chunks.append(cur)
+    if not train_chunks:
+        print("Skipping training (no train files after val split).")
+        return 0.0, 0.0
+    multi_chunk = len(train_chunks) > 1
+    n_train_pos = sum(n for _, n in train_plan)
+    n_val_pos   = sum(n for _, n in val_plan)
+    print(f"Window: {total_window:,} pos / {n_files} files → {n_train_pos:,} train / {n_val_pos:,} val"
+          f"  |  {len(train_chunks)} chunk(s) ≤{chunk_cap:,} pos" + ("  [CHUNKED]" if multi_chunk else ""))
+
+    # DataLoader: during training the self-play server is dead so all vCPUs are free. Workers
+    # only do flip-aug + f16→f32 cast over the read-only f16 buffer (COW fork → no RAM ×).
+    # TRAIN_DL_WORKERS (default cores/2, ≤16 → 16 on the L4 box) · TRAIN_DL_PREFETCH (default 4).
+    num_dl_workers = int(os.environ.get("TRAIN_DL_WORKERS", min(16, max(2, (os.cpu_count() or 4) // 2))))
+    dl_prefetch = int(os.environ.get("TRAIN_DL_PREFETCH", 4))
+
+    def _mk_loader(ds, shuffle, persistent):
+        kw = dict(num_workers=num_dl_workers, pin_memory=(num_dl_workers > 0),
+                  persistent_workers=(persistent and num_dl_workers > 0))
+        if num_dl_workers > 0:
+            kw['prefetch_factor'] = dl_prefetch
+        return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, **kw)
+
+    # Val set loaded once, persists across all epochs. Single-chunk: load the train data once and
+    # reuse it every epoch (no reload). Multi-chunk: train loaders are built per chunk in the loop.
+    val_dataset = ChessDataset(data_path, file_plan=val_plan)
+    val_dataloader = _mk_loader(val_dataset, shuffle=False, persistent=True) if len(val_dataset) > 0 else None
+    train_dataset = train_dataloader = None
+    if not multi_chunk:
+        train_dataset = ChessDataset(data_path, file_plan=train_chunks[0])
+        train_dataloader = _mk_loader(train_dataset, shuffle=True, persistent=True)
 
     # 2. Load Model
     model = ChessCNN().to(device)
@@ -282,10 +319,12 @@ def train_model(data_path="data/self_play",
     model.train()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
-    # scheduler.step() is called once per batch, i.e. epochs*len(dataloader) times per
-    # training phase, so T_max must include the epochs factor or the cosine completes its
-    # half-period ~epochs× too early and then oscillates back up (CosineAnnealingLR is periodic).
-    total_steps = total_iterations * epochs * len(dataloader)
+    # scheduler.step() is called once per batch. A training phase runs epochs × (all chunks),
+    # so batches_per_epoch sums every chunk's batch count; T_max must include the epochs factor
+    # or the cosine completes its half-period ~epochs× too early (CosineAnnealingLR is periodic).
+    batches_per_epoch = sum(max(1, (sum(n for _, n in ch) + batch_size - 1) // batch_size)
+                            for ch in train_chunks)
+    total_steps = total_iterations * epochs * max(batches_per_epoch, 1)
     scheduler = CosineAnnealingLR(optimizer, T_max=max(total_steps, 1), eta_min=1e-6)
 
     if checkpoint is not None:
@@ -302,14 +341,13 @@ def train_model(data_path="data/self_play",
     scaler = torch.cuda.amp.GradScaler(enabled=(device.type == 'cuda'))
 
     # ── Header ─────────────────────────────────────────────────────────────────
-    n_train = len(dataloader)
-    n_val   = len(val_dataloader)
+    n_val_batches = len(val_dataloader) if val_dataloader is not None else 0
     sep = '─' * 86
     print(f"\n{'═'*86}")
     print(f"  RL Training  |  {epochs} epochs  |  batch={batch_size}"
-          f"  |  {train_size} train / {val_size} val positions")
-    print(f"  {n_train} train batches/ep  |  {n_val} val batches/ep"
-          f"  |  {num_dl_workers} DataLoader workers")
+          f"  |  {n_train_pos} train / {n_val_pos} val positions")
+    print(f"  {batches_per_epoch} train batches/ep  |  {n_val_batches} val batches/ep"
+          f"  |  {num_dl_workers} workers ×{dl_prefetch} prefetch  |  {len(train_chunks)} chunk(s)")
     print(f"{'═'*86}")
     print(f"{'Ep':>6}  {'Tr-P':>7}  {'Tr-V':>7}  {'Va-P':>7}  {'Va-V':>7}"
           f"  {'Tr-Acc':>7}  {'Va-Acc':>7}  {'GNorm':>7}  {'LR':>10}  {'Time':>5}")
@@ -320,6 +358,26 @@ def train_model(data_path="data/self_play",
     last_v_loss = 0.0
     best_val    = float('inf')
 
+    def _train_batches():
+        """Yield every train batch for one epoch. Single-chunk: the one persistent loader.
+        Multi-chunk: load → yield → free each chunk (shuffled order) so only one chunk is in RAM
+        at a time, yet the whole `window_size`-iteration window is still covered every epoch."""
+        if multi_chunk:
+            order = list(range(len(train_chunks)))
+            np.random.shuffle(order)
+            for ci in order:
+                ds = ChessDataset(data_path, file_plan=train_chunks[ci])
+                if len(ds) == 0:
+                    continue
+                dl = _mk_loader(ds, shuffle=True, persistent=False)
+                for b in dl:
+                    yield b
+                del dl, ds
+                gc.collect()
+        else:
+            for b in train_dataloader:
+                yield b
+
     # 4. Training Loop
     for epoch in range(epochs):
         epoch_start = time.time()
@@ -329,8 +387,8 @@ def train_model(data_path="data/self_play",
         tr_p = tr_v = tr_acc = g_norm = 0.0
         n_tr = 0
 
-        train_bar = tqdm(dataloader, desc=f"  train {epoch+1}/{epochs}",
-                         leave=False, ncols=88, unit='bat')
+        train_bar = tqdm(_train_batches(), total=batches_per_epoch,
+                         desc=f"  train {epoch+1}/{epochs}", leave=False, ncols=88, unit='bat')
         for batch in train_bar:
             states          = batch['state'].to(device, non_blocking=True)
             target_policies = batch['policy'].to(device, non_blocking=True)
@@ -374,8 +432,8 @@ def train_model(data_path="data/self_play",
         va_p = va_v = va_acc = 0.0
         n_va = 0
 
-        val_bar = tqdm(val_dataloader, desc=f"  val   {epoch+1}/{epochs}",
-                       leave=False, ncols=88, unit='bat')
+        val_bar = tqdm(val_dataloader if val_dataloader is not None else [],
+                       desc=f"  val   {epoch+1}/{epochs}", leave=False, ncols=88, unit='bat')
         with torch.no_grad():
             for batch in val_bar:
                 states          = batch['state'].to(device, non_blocking=True)
@@ -435,7 +493,10 @@ def train_model(data_path="data/self_play",
     # GPU memory, and shut down the persistent DataLoader workers, BEFORE returning to the
     # eval phase (which spawns its own inference servers). Otherwise the dataset RAM + model
     # VRAM linger via the persistent workers until a later GC.
-    del dataloader, val_dataloader, train_dataset, val_dataset, dataset
+    if train_dataloader is not None:
+        del train_dataloader, train_dataset
+    if val_dataloader is not None:
+        del val_dataloader, val_dataset
     del model, optimizer, scheduler, scaler
     gc.collect()
     if torch.cuda.is_available():

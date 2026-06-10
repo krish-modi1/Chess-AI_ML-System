@@ -121,6 +121,9 @@ export CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))  # 96
 # CRITICAL for small GPUs: TRAIN_BATCH_SIZE default (2048) is sized for the 22 GB L4 and
 # OOMs on 6 GB. Probed locally: batch=256 → 3.2 GB peak with AMP.
 export TRAIN_BATCH_SIZE=256
+# GCP uses 16 DataLoader workers / prefetch 4; local datasets are tiny + RAM is tight, keep it light.
+export TRAIN_DL_WORKERS=4
+export TRAIN_DL_PREFETCH=1
 
 echo ""
 echo "============================================================"

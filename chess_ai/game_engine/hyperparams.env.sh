@@ -54,6 +54,13 @@ export ITERATION_TIMEOUT=172800        # 48h per-iteration deadlock guard (main.
 export INFERENCE_TIMEOUT_MS=300000     # 5min max wait for ONE inference round-trip (per call)
 export SERVER_DEADLOCK_TIMEOUT=1800    # 30min: server self-kills if it processes no batch
 
+# Training DataLoader workers. The self-play server is dead during training so all 32 vCPUs are
+# free; 16 (= physical cores) feeds the GPU a 2048-batch without starving it, and prefetch_factor=4
+# (in trainer.py) keeps 4 batches ready per worker. COW fork shares the read-only f16 dataset →
+# no RAM multiplication. Local launchers override this lower (tiny datasets).
+export TRAIN_DL_WORKERS=16
+export TRAIN_DL_PREFETCH=4   # batches buffered per worker (local launchers set 1)
+
 # Loop / eval / rules — identical on all platforms.
 export SIMULATIONS=800
 export EVAL_SIMULATIONS=800

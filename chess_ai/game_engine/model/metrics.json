@@ -1,1 +1,11 @@
-[]
+[
+  {
+    "iteration": 1,
+    "timestamp": "2026-06-09T22:01:37.065140",
+    "policy_loss": 7.204604784647624,
+    "value_loss": 1.4445403814315796,
+    "arena_win_rate": 0.5,
+    "model_elo": 1638.0,
+    "stockfish_elo": 1800
+  }
+]
