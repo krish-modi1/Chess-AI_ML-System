@@ -110,11 +110,11 @@ export EVAL_SIMULATIONS=800
 export SKIP_EVAL=1                 # skip Phase 3 (arena + Stockfish eval)
 
 # ── Local CPU/GPU tuning (this laptop: 16 logical cores, 6 GB GPU, 14 GB RAM) ──
-# WORKER_BATCH_SIZE = per-search leaf batch. KEEP SMALL: num_iterations = SIMULATIONS /
-# WORKER_BATCH_SIZE. batch=8 → 100 iterations (genuine MCTS refinement, matches GCP);
-# a large batch collapses the search to ~1 iteration (target ≈ prior, no learning signal).
-# Oversubscribe (16 logical cores): workers mostly block on the 100 inference round-trips/move,
-# so 12 workers keep the CPU busy and pool more leaves per inference (12×8 = 96/round).
+# WORKER_BATCH_SIZE=8 → num_iter=100 = full AlphaZero-quality sequential search. The 100
+# inference round-trips/move are CHEAP now: SHM_TRANSPORT moves bulk tensors through shared
+# memory and sends only (worker_id, N) signals through the queues, so we keep top quality
+# without the IPC/GPU-starvation the pickle-through-queue path used to cause.
+export SHM_TRANSPORT=1
 export NUM_WORKERS=12
 export WORKER_BATCH_SIZE=8
 export CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))  # 96
@@ -128,10 +128,11 @@ echo " Run configuration (GCP replica)"
 echo "============================================================"
 echo "  GPU              : $GPU_NAME (${VRAM_GB} GB)"
 echo "  NUM_WORKERS      : $NUM_WORKERS"
-echo "  WORKER_BATCH_SIZE: $WORKER_BATCH_SIZE"
+echo "  WORKER_BATCH_SIZE: $WORKER_BATCH_SIZE   → num_iter=$(( SIMULATIONS / WORKER_BATCH_SIZE ))"
 echo "  CUDA_BATCH_SIZE  : $CUDA_BATCH_SIZE"
 echo "  CUDA_STREAMS     : $CUDA_STREAMS"
 echo "  CUDA_TIMEOUT     : ${CUDA_TIMEOUT_INFERENCE}s"
+echo "  SHM_TRANSPORT    : $SHM_TRANSPORT   (1 = shared-memory inference path)"
 echo "  SIMULATIONS      : $SIMULATIONS   (matches GCP)"
 echo "  GAMES_PER_WORKER : $GAMES_PER_WORKER   → $(( NUM_WORKERS * GAMES_PER_WORKER )) games total"
 echo "  TRAIN_EPOCHS     : $TRAIN_EPOCHS"

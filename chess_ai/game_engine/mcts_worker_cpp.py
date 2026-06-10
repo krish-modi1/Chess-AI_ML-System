@@ -70,7 +70,8 @@ class MCTSWorker:
     ─────────────────────────────────────────────────────────────────────
     """
 
-    def __init__(self, worker_id, input_queue, output_queue, simulations=800, batch_size=8, seed=0):
+    def __init__(self, worker_id, input_queue, output_queue, simulations=800, batch_size=8, seed=0,
+                 shm_inp=None, shm_pol=None, shm_val=None):
         """
         Initialize MCTSWorker with C++ backend.
 
@@ -81,6 +82,10 @@ class MCTSWorker:
             simulations: Total number of MCTS simulations
             batch_size: Number of leaves to evaluate per iteration
             seed: Random seed for exploration diversity
+            shm_inp/shm_pol/shm_val: shared-memory transport buffers
+                (NUM_WORKERS, WORKER_BATCH_SIZE, …). When present, leaf/result tensors are
+                exchanged via this worker's per-id slot and only (worker_id, N) signals go
+                through the queues. None → legacy pickle-through-queue path.
         """
         self.worker_id = worker_id
         self.input_queue = input_queue
@@ -89,6 +94,14 @@ class MCTSWorker:
         self.batch_size = batch_size
         self.cpu = 1.0
         self.seed = seed
+
+        # Per-worker shared-memory views (this worker only ever touches row `worker_id`).
+        self.shm = shm_inp is not None
+        if self.shm:
+            assert shm_inp.is_shared(), "shm_inp not shared — check Process args under spawn"
+            self._inp_view = shm_inp[worker_id]   # (WORKER_BATCH_SIZE, 120, 8, 8)
+            self._pol_view = shm_pol[worker_id]   # (WORKER_BATCH_SIZE, 4672)
+            self._val_view = shm_val[worker_id]   # (WORKER_BATCH_SIZE, 3)
 
         # Root NN value (P(win)-P(loss), side-to-move POV, in [-1,1]) from the most recent
         # search(). Sim-independent (computed from the single root inference), so it stays a
@@ -148,7 +161,30 @@ class MCTSWorker:
             )
 
         tensors = [state.to_tensor(self._cpp_history) for state in leaf_states]
-        batch_tensor = torch.from_numpy(np.array(tensors))
+        arr = np.array(tensors)   # (N, 120, 8, 8) float32
+
+        # ── Shared-memory path ───────────────────────────────────────────────────
+        if self.shm:
+            n = batch_size
+            self._inp_view[:n] = torch.from_numpy(arr)          # write our slot
+            self.input_queue.put((self.worker_id, n))           # tiny signal, no tensor
+            try:
+                self._get_inference_result()                    # block for (n,) sentinel
+            except TimeoutError:
+                print(f"[Worker {self.worker_id}] ❌ Inference timeout in callback")
+                return (
+                    np.zeros((batch_size, 4672), dtype=np.float32),
+                    np.zeros((batch_size,), dtype=np.float32)
+                )
+            # .clone() is mandatory: the next request will overwrite this slot.
+            policies_np = self._pol_view[:n].clone().numpy()
+            v = self._val_view[:n].clone()                      # (n, 3) raw logits
+            probs = torch.softmax(v, dim=1)
+            values_scalar = (probs[:, 0] - probs[:, 2]).numpy().astype(np.float32)
+            return (policies_np, values_scalar)
+
+        # ── Legacy path ──────────────────────────────────────────────────────────
+        batch_tensor = torch.from_numpy(arr)
 
         self.input_queue.put((self.worker_id, batch_tensor))
 
@@ -184,15 +220,15 @@ class MCTSWorker:
     # MAIN SEARCH METHOD
     # ═══════════════════════════════════════════════════════════════════════════
 
-    def search(self, root_state, temperature=1.0, history=None):
+    def search(self, root_state, temperature=1.0, history=None, use_dirichlet=True):
         """
-        Perform MCTS search.
+        Perform MCTS search (server-routed).
 
         Args:
             root_state: ChessGame object for root position
             temperature: Temperature for move selection
             history: list[chess.Board], most recent first, up to 7 entries.
-                     Used to fill historical planes 14-111 of to_tensor().
+            use_dirichlet: root exploration noise — True for self-play, False for eval (greedy).
         Returns:
             Tuple of (best_move: str, policy_vector: np.ndarray)
         """
@@ -204,33 +240,49 @@ class MCTSWorker:
         # Acceptable — matches the existing root-history approximation.
         self._cpp_history = [mcts_engine_cpp.ChessBoard(b.fen()) for b in (history or [])]
 
-        # Get root position evaluation from inference server
-        root_tensor = torch.from_numpy(cpp_root.to_tensor(self._cpp_history)).unsqueeze(0)
-        self.input_queue.put((self.worker_id, root_tensor))
+        # Get root position evaluation from inference server (N=1, same slot mechanism).
+        root_np = cpp_root.to_tensor(self._cpp_history)   # (120, 8, 8) float32
 
-        try:
-            policy, value = self._get_inference_result()
-        except TimeoutError:
-            print(f"[Worker {self.worker_id}] ❌ Server timeout - no root inference")
-            raise RuntimeError("Server communication timeout")
-
-        if isinstance(policy, torch.Tensor):
-            policy_np = policy.detach().cpu().numpy()
+        if self.shm:
+            self._inp_view[:1] = torch.from_numpy(root_np).unsqueeze(0)
+            self.input_queue.put((self.worker_id, 1))
+            try:
+                self._get_inference_result()
+            except TimeoutError:
+                print(f"[Worker {self.worker_id}] ❌ Server timeout - no root inference")
+                raise RuntimeError("Server communication timeout")
+            policy_np = self._pol_view[:1].clone().numpy()[0]   # (4672,)
+            v = self._val_view[:1].clone()                      # (1, 3) raw logits
+            probs = torch.softmax(v, dim=1)
+            value_f = float(probs[0, 0] - probs[0, 2])
+            self.last_root_value = value_f
         else:
-            policy_np = np.array(policy, dtype=np.float32)
+            root_tensor = torch.from_numpy(root_np).unsqueeze(0)
+            self.input_queue.put((self.worker_id, root_tensor))
 
-        if policy_np.ndim == 2:
-            policy_np = policy_np[0]
+            try:
+                policy, value = self._get_inference_result()
+            except TimeoutError:
+                print(f"[Worker {self.worker_id}] ❌ Server timeout - no root inference")
+                raise RuntimeError("Server communication timeout")
 
-        if isinstance(value, torch.Tensor):
-            v = value.detach().cpu()
-        else:
-            v = torch.from_numpy(np.array(value, dtype=np.float32))
-        if v.ndim == 1:
-            v = v.unsqueeze(0)
-        probs = torch.softmax(v, dim=1)
-        value_f = float(probs[0, 0] - probs[0, 2])
-        self.last_root_value = value_f   # exposed for KataGo-style decided-game detection
+            if isinstance(policy, torch.Tensor):
+                policy_np = policy.detach().cpu().numpy()
+            else:
+                policy_np = np.array(policy, dtype=np.float32)
+
+            if policy_np.ndim == 2:
+                policy_np = policy_np[0]
+
+            if isinstance(value, torch.Tensor):
+                v = value.detach().cpu()
+            else:
+                v = torch.from_numpy(np.array(value, dtype=np.float32))
+            if v.ndim == 1:
+                v = v.unsqueeze(0)
+            probs = torch.softmax(v, dim=1)
+            value_f = float(probs[0, 0] - probs[0, 2])
+            self.last_root_value = value_f   # exposed for KataGo-style decided-game detection
 
         best_move, policy_vector = self.mcts_engine.search(
             cpp_root,
@@ -238,7 +290,8 @@ class MCTSWorker:
             value_f,
             temperature,
             self.seed,
-            self._batch_inference_callback
+            self._batch_inference_callback,
+            use_dirichlet,
         )
 
         return best_move, policy_vector

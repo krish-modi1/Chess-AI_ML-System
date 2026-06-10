@@ -9,6 +9,7 @@ from torch.utils.data import Dataset, DataLoader, Subset
 from tqdm import tqdm
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import numpy as np
+import gc
 import os
 import glob
 import sys
@@ -61,10 +62,15 @@ def _build_h_flip_perm():
 _H_FLIP_PERM = _build_h_flip_perm()
 
 class ChessDataset(Dataset):
-    def __init__(self, data_dir, window_size=20, max_positions=2_000_000):
-        # max_positions cap: at float16, 2M positions ≈ 49 GB RAM regardless of
-        # game length. Without a cap, 20 iterations of 600 long games can exceed
-        # 100 GB. Newest-iteration files are loaded first so the cap drops oldest data.
+    def __init__(self, data_dir, window_size=20, max_positions=None):
+        # Policy = train on the last `window_size` iterations. `max_positions` is now only a
+        # RAM-SAFETY CEILING (not an arbitrary cap): at float16 a position is ~24.7 KB, so a
+        # 126 GB box holds ~5 M positions. 20 iterations of long games CAN exceed that, so we
+        # cap at MAX_TRAIN_POSITIONS (default 4.5 M ≈ 110 GB) which only binds if the window
+        # would OOM — i.e. "last 20 iterations, or the most-recent ~4.5 M positions if too big".
+        # Newest-iteration files load first, so the ceiling drops the OLDEST data.
+        if max_positions is None:
+            max_positions = int(os.environ.get("MAX_TRAIN_POSITIONS", 4_500_000))
         self.total_positions = 0
 
         if not os.path.exists(data_dir):
@@ -216,9 +222,12 @@ def train_model(data_path="data/self_play",
         print("Skipping training (No Data).")
         return 0.0, 0.0
 
-    # Data is fully pre-loaded in RAM; workers only do flip augmentation (cheap).
-    # 4 workers on GCP 32-vCPU; 1 on 8-core laptop. Fork shares pages → no RAM multiplication.
-    num_dl_workers = min(4, max(0, (os.cpu_count() or 4) // 8))
+    # Data is fully pre-loaded in RAM; workers only do flip augmentation + f16→f32 cast.
+    # During training the self-play server is dead, so all vCPUs are free. One worker can't
+    # produce a 2048-batch as fast as the GPU consumes it, so scale up: 8 on GCP 32-vCPU,
+    # 2 on laptop. Beyond ~8 the GPU compute is the ceiling and extra workers idle.
+    # Fork shares the read-only f16 buffers (COW) → no RAM multiplication.
+    num_dl_workers = min(8, max(2, (os.cpu_count() or 4) // 4))
 
     # Split by GAME, not by position. Consecutive positions within a game are nearly
     # identical (one ply apart, same value label, correlated policy), so a position-level
@@ -235,16 +244,15 @@ def train_model(data_path="data/self_play",
     val_dataset   = Subset(dataset, val_idx)
     train_size, val_size = len(train_idx), len(val_idx)
 
-    dataloader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=num_dl_workers, pin_memory=(num_dl_workers > 0),
-        persistent_workers=False,
-    )
-    val_dataloader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=num_dl_workers, pin_memory=(num_dl_workers > 0),
-        persistent_workers=False,
-    )
+    # persistent_workers=True: workers spawn ONCE and survive across the 4 epochs (was
+    # respawning every epoch, which dominated the few seconds of compute in early iterations
+    # with tiny datasets). prefetch_factor=4: each worker keeps 4 batches ready → smooth GPU feed.
+    _dl_kw = dict(num_workers=num_dl_workers, pin_memory=(num_dl_workers > 0),
+                  persistent_workers=(num_dl_workers > 0))
+    if num_dl_workers > 0:
+        _dl_kw['prefetch_factor'] = 4
+    dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, **_dl_kw)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, **_dl_kw)
 
     # 2. Load Model
     model = ChessCNN().to(device)
@@ -352,7 +360,11 @@ def train_model(data_path="data/self_play",
             tr_p   += p_loss.item()
             tr_v   += v_loss.item()
             tr_acc += acc
-            g_norm += total_norm.item()
+            # On an AMP fp16 overflow the GradScaler skips the step (training is protected),
+            # but clip_grad_norm returns inf/nan for that batch — don't let it poison the
+            # epoch's averaged GNorm display.
+            tn = total_norm.item()
+            g_norm += tn if np.isfinite(tn) else 0.0
             n_tr   += 1
             train_bar.set_postfix(p=f"{p_loss.item():.3f}", v=f"{v_loss.item():.3f}",
                                    acc=f"{acc*100:.1f}%")
@@ -370,9 +382,11 @@ def train_model(data_path="data/self_play",
                 target_policies = batch['policy'].to(device, non_blocking=True)
                 target_values   = batch['value'].to(device, non_blocking=True)
 
-                with torch.amp.autocast(device_type=device.type):
-                    pred_policies, pred_values = model(states)
-                    v_loss = ce_value_loss(pred_values, target_values)
+                # Validation in fp32 (NO autocast): val has no GradScaler, so an fp16 logit
+                # overflow during early-training instability would surface as a NaN val loss
+                # (seen at epoch 2). fp32 val is cheap (no backward) and overflow-proof.
+                pred_policies, pred_values = model(states)
+                v_loss = ce_value_loss(pred_values, target_values)
 
                 log_probs = torch.log_softmax(pred_policies.float(), dim=1).clamp(min=-100.0)
                 p_loss = -(target_policies.nan_to_num(0.0) * log_probs).sum(dim=1).mean()
@@ -416,7 +430,17 @@ def train_model(data_path="data/self_play",
         'scheduler_state_dict': scheduler.state_dict(),
     }, output_model_path)
     print(f"New model saved to {output_model_path}")
-    
+
+    # Free the in-RAM dataset (up to ~100 GB at the 20-iter window) and the model/optimizer
+    # GPU memory, and shut down the persistent DataLoader workers, BEFORE returning to the
+    # eval phase (which spawns its own inference servers). Otherwise the dataset RAM + model
+    # VRAM linger via the persistent workers until a later GC.
+    del dataloader, val_dataloader, train_dataset, val_dataset, dataset
+    del model, optimizer, scheduler, scaler
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     return last_p_loss, last_v_loss
 
 if __name__ == "__main__":

@@ -21,14 +21,14 @@
 export NUM_WORKERS=64
 
 # Per-worker MCTS leaf batch = leaves submitted to the inference server per search iteration.
-# CRITICAL: num_iterations = SIMULATIONS / WORKER_BATCH_SIZE. This MUST stay small. A large
-# value (e.g. the old VRAM_CAP/NUM_WORKERS = 533) collapses MCTS to num_iterations=1: all
-# leaves are selected from the prior before any value backprop, so the visit distribution ≈
-# the raw policy prior (KL≈0.06) — the search adds nothing and the policy target carries no
-# learning signal. AlphaZero used 8 → 100 sequential iterations at 800 sims. The inference
-# server pools leaves across all NUM_WORKERS workers into one GPU batch, so a small per-worker
-# value still keeps the GPU well fed (30×8 = 240 leaves/inference here).
+# num_iterations = SIMULATIONS / WORKER_BATCH_SIZE. 8 → num_iter=100 = full AlphaZero-quality
+# sequential search. The 100 inference round-trips/move used to starve the GPU (~13% util) when
+# tensors were pickled through mp.Queue, but the SHARED-MEMORY transport (SHM_TRANSPORT, default
+# on) moves the bulk tensors into shared buffers and sends only tiny (worker_id, N) signals — so
+# the round-trips are cheap and we keep top search quality AND high GPU utilisation.
 export WORKER_BATCH_SIZE=8
+# Shared-memory inference transport (set 0 to fall back to the legacy pickle-through-queue path).
+export SHM_TRANSPORT=1
 
 # VRAM tier → CUDA stream count + a ceiling on the pooled inference batch.
 if   (( VRAM_MIB >= 35000 )); then CUDA_STREAMS=8; VRAM_CAP=24000

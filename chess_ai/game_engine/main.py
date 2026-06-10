@@ -12,7 +12,6 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 import numpy as np
 import signal
 import sys
-import json
 
 class TimeoutHandler:
     """Handle process timeouts to prevent deadlocks"""
@@ -49,7 +48,7 @@ from game_engine.neural_net import InferenceServer
 from game_engine.mcts_worker_cpp import MCTSWorker
 from game_engine.chess_env import ChessGame
 from game_engine.trainer import train_model
-from game_engine.evaluation import Arena, StockfishEvaluator, MetricsLogger
+from game_engine.evaluation import MetricsLogger
 from game_engine.cnn import ChessCNN
 
 # ==========================================
@@ -115,9 +114,48 @@ def cleanup_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration, games_counter=None):
-    # Generate unique seed for this worker (same for python and C++ RNG)
-    mcts_seed = int(time.time()) + worker_id
+def _promote_best():
+    """Copy candidate → best, unless NO_PROMOTE (dry-run eval that must not mutate the champion)."""
+    if NO_PROMOTE:
+        print("  (NO_PROMOTE: keeping best_model.pth unchanged)")
+    else:
+        shutil.copyfile(CANDIDATE_MODEL, BEST_MODEL)
+
+def _start_inference_server(model_path, n_workers, worker_batch, cuda_batch, streams, timeout):
+    """Start an InferenceServer (own process) hosting `model_path`, with SHM buffers + per-worker
+    queues — same batched-GPU path self-play uses. Returns (server, proc, worker_queues, shm tuple)."""
+    if SHM_TRANSPORT:
+        shm_inp = torch.empty((n_workers, worker_batch, 120, 8, 8), dtype=torch.float32).share_memory_()
+        shm_pol = torch.empty((n_workers, worker_batch, 4672), dtype=torch.float32).share_memory_()
+        shm_val = torch.empty((n_workers, worker_batch, 3), dtype=torch.float32).share_memory_()
+    else:
+        shm_inp = shm_pol = shm_val = None
+    server = InferenceServer(model_path, batch_size=cuda_batch, timeout=timeout, streams=streams,
+                             shm_inp=shm_inp, shm_pol=shm_pol, shm_val=shm_val)
+    wq = [server.register_worker(i) for i in range(n_workers)]
+    sp = mp.Process(target=run_server_wrapper, args=(server,))
+    sp.start()
+    time.sleep(5)  # server CUDA init + model load
+    return server, sp, wq, (shm_inp, shm_pol, shm_val)
+
+def _stop_inference_server(server, sp):
+    """STOP the server and free its VRAM before the next phase/server."""
+    try:
+        server.input_queue.put("STOP")
+        sp.join(timeout=10)
+    except Exception:
+        pass
+    if sp.is_alive():
+        sp.terminate(); sp.join(timeout=5)
+        if sp.is_alive():
+            sp.kill(); sp.join()
+    cleanup_memory()
+
+def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration, games_counter=None,
+                     shm_inp=None, shm_pol=None, shm_val=None):
+    # Generate unique seed for this worker (same for python and C++ RNG).
+    # SEED_BASE (env) makes runs reproducible for A/B correctness tests; default = wall clock.
+    mcts_seed = int(os.environ.get("SEED_BASE", int(time.time()))) + worker_id
     np.random.seed(mcts_seed)  # Use same seed for numpy RNG
     
     if hasattr(os, 'sched_setaffinity'):
@@ -136,7 +174,8 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
     worker = MCTSWorker(worker_id, input_queue, output_queue,
                         simulations=SIMULATIONS,
                         batch_size=WORKER_BATCH_SIZE,
-                        seed=mcts_seed)
+                        seed=mcts_seed,
+                        shm_inp=shm_inp, shm_pol=shm_pol, shm_val=shm_val)
     
     for i in range(game_limit):
         # Pacing: don't start game i until no worker is more than MAX_WORKER_LEAD behind.
@@ -320,6 +359,9 @@ CANDIDATE_MODEL = f"{MODEL_DIR}/candidate.pth"
 CUDA_TIMEOUT_INFERENCE = float(os.environ.get("CUDA_TIMEOUT_INFERENCE", 0.02))
 CUDA_STREAMS = int(os.environ.get("CUDA_STREAMS", 8))
 CUDA_BATCH_SIZE = int(os.environ.get("CUDA_BATCH_SIZE", 4096))
+# Shared-memory inference transport: pass leaf/result tensors via shared buffers and send only
+# tiny (worker_id, N) signals through the queues (vs pickling tensors). "0" = legacy path.
+SHM_TRANSPORT = os.environ.get("SHM_TRANSPORT", "1") == "1"
 
 # --- EXECUTION ---
 RESUME_ITERATION = None
@@ -349,6 +391,9 @@ STOCKFISH_GAMES = int(os.environ.get("STOCKFISH_GAMES", 20))
 STOCKFISH_ELO = int(os.environ.get("STOCKFISH_ELO", 1320))
 # Skip Phase 3 (arena + Stockfish eval) entirely — for local self-play/train validation.
 SKIP_EVAL = os.environ.get("SKIP_EVAL", "0") == "1"
+# Run eval but NEVER overwrite best_model.pth (dry-run promotion) — for testing the eval phase
+# without mutating the champion.
+NO_PROMOTE = os.environ.get("NO_PROMOTE", "0") == "1"
 
 # --- RULES ---
 MAX_MOVES_PER_GAME = int(os.environ.get("MAX_MOVES_PER_GAME", 800))
@@ -363,41 +408,255 @@ current_iter = get_start_iteration(DATA_DIR) - 1
 
 # Training
 TRAIN_EPOCHS = int(os.environ.get("TRAIN_EPOCHS", 4))
-TRAIN_WINDOW = int(os.environ.get("TRAIN_WINDOW", 50))
+TRAIN_WINDOW = int(os.environ.get("TRAIN_WINDOW", 20))   # train on the last 20 iterations' self-play data
 # TRAIN_BATCH_SIZE is sized for the 22 GB L4 (uses ~20 GB). Override low (e.g. 128) for
 # small local GPUs — backprop activation memory across 20 blocks scales with batch size.
 TRAIN_BATCH_SIZE = int(os.environ.get("TRAIN_BATCH_SIZE", 2048))
-TRAIN_LR = float(os.environ.get("TRAIN_LR", 0.001))
+TRAIN_LR = float(os.environ.get("TRAIN_LR", 3e-4))   # gentler AdamW fine-tune from pretrained; fewer fp16 overflows
 
 # --- DRY WORKER WRAPPERS ---
 
-def run_arena_batch_worker(worker_id, queue, num_games, cand_model, champ_model, sims, max_moves):
+def run_stockfish_server_worker(worker_id, in_q, out_q, n_games, stockfish_path, sims, worker_batch,
+                                sf_elo, max_moves, result_q, shm_inp, shm_pol, shm_val):
+    """Play n_games of Model-vs-Stockfish. The model's MCTS inference is routed to the shared GPU
+    InferenceServer (batched, like self-play); Stockfish runs on CPU as the opponent. Pushes one
+    result dict (or None on failure) per game to result_q."""
     setup_child_logging()
-    np.random.seed(worker_id + int(time.time()) % 10000)
-    torch.manual_seed(worker_id + int(time.time()) % 10000)
+    import chess, chess.engine, chess.pgn, io
+    from datetime import datetime
+    worker = MCTSWorker(worker_id, in_q, out_q, simulations=sims, batch_size=worker_batch,
+                        seed=worker_id + int(time.time()) % 10000,
+                        shm_inp=shm_inp, shm_pol=shm_pol, shm_val=shm_val)
     try:
-        arena = Arena(cand_model, champ_model, sims)
-        w, d, l, fd = 0, 0, 0, 0
-        for game_num in range(num_games):
-            result = arena.play_game(game_num, max_moves=max_moves)
-            if result == "CAND_WIN":
-                w += 1
-            elif result == "CHAMP_WIN":
-                l += 1
-            elif result == "DRAW":
-                d += 1
-            elif result == "DRAW_FORCED":
+        engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+        try:
+            engine.configure({"UCI_LimitStrength": True, "UCI_Elo": sf_elo})
+        except Exception:
+            pass  # older Stockfish may not support UCI_Elo
+    except Exception as e:
+        print(f"[SF Worker {worker_id}] engine launch failed: {e}")
+        for _ in range(n_games):
+            result_q.put(None)
+        return
+
+    for gi in range(n_games):
+        game_id = worker_id * n_games + gi
+        game = ChessGame()
+        agent_is_white = (game_id % 2 == 0)
+        history = collections.deque(maxlen=7)
+        worker.reset_cache()
+        try:
+            while not game.is_over and len(game.moves) < max_moves:
+                is_agent = ((game.board.turn == chess.WHITE) == agent_is_white)
+                if is_agent:
+                    mv, _ = worker.search(game, temperature=0.0, history=list(history), use_dirichlet=False)
+                else:
+                    mv = engine.play(game.board, chess.engine.Limit(time=0.1)).move.uci()
+                if mv is None:
+                    break
+                worker.advance_root(mv)
+                history.appendleft(game.board.copy())
+                game.push(mv)
+        except Exception as e:
+            print(f"[SF Worker {worker_id}] game {game_id} error: {e}")
+            result_q.put(None)
+            continue
+
+        result = game.result
+        white = "Model" if agent_is_white else "Stockfish"
+        black = "Stockfish" if agent_is_white else "Model"
+        pgn = chess.pgn.Game()
+        pgn.headers["Event"] = "Model vs Stockfish"
+        pgn.headers["Date"]  = datetime.now().strftime("%Y.%m.%d")
+        pgn.headers["Round"] = str(game_id + 1)
+        pgn.headers["White"] = white
+        pgn.headers["Black"] = black
+        pgn.headers["Result"] = result
+        node = pgn
+        for m in game.moves:
+            try:
+                node = node.add_variation(chess.Move.from_uci(m))
+            except Exception:
+                pass
+        buf = io.StringIO(); print(pgn, file=buf, end="\n\n")
+        result_q.put({"result": result, "pgn_str": buf.getvalue(),
+                      "agent_is_white": agent_is_white, "game_id": game_id, "num_moves": len(game.moves)})
+        print(f"[SF Worker {worker_id}] Game {game_id+1}: {result} ({white} vs {black}) | Moves: {len(game.moves)}")
+    try:
+        engine.quit()
+    except Exception:
+        pass
+
+
+def run_stockfish_eval_gpu(model_path, num_games, stockfish_path, sims, sf_elo, max_moves, pgn_path):
+    """Server-routed Stockfish eval: the evaluated model runs on ONE GPU InferenceServer (batched),
+    Stockfish on CPU. Returns the BayesElo result dict (or None)."""
+    from game_engine.bayeselo_runner import BayesEloRunner
+    if not os.path.exists(stockfish_path):
+        print(f"❌ Stockfish not found at {stockfish_path}")
+        return None
+
+    n_workers = max(1, min(num_games, EVAL_WORKERS))
+    per = [num_games // n_workers + (1 if i < num_games % n_workers else 0) for i in range(n_workers)]
+
+    print(f"  Stockfish eval: model on GPU server + {n_workers} CPU-Stockfish workers ({num_games} games)")
+    server, sp, wq, (shm_inp, shm_pol, shm_val) = _start_inference_server(
+        model_path, n_workers, WORKER_BATCH_SIZE, CUDA_BATCH_SIZE, CUDA_STREAMS, CUDA_TIMEOUT_INFERENCE)
+
+    result_q = mp.Queue()
+    workers = []
+    for i in range(n_workers):
+        p = mp.Process(target=run_stockfish_server_worker,
+                       args=(i, server.input_queue, wq[i], per[i], stockfish_path, sims,
+                             WORKER_BATCH_SIZE, sf_elo, max_moves, result_q, shm_inp, shm_pol, shm_val))
+        p.start(); workers.append(p)
+
+    results = []
+    for _ in range(num_games):
+        try:
+            r = result_q.get(timeout=900)
+            if r is not None:
+                results.append(r)
+        except Exception:
+            break
+    for p in workers:
+        p.join(timeout=10)
+        if p.is_alive():
+            p.terminate(); p.join(timeout=5)
+    _stop_inference_server(server, sp)
+
+    if not results:
+        print("❌ All Stockfish eval games failed")
+        return None
+
+    w = l = d = 0
+    parts = []
+    for r in sorted(results, key=lambda x: x["game_id"]):
+        parts.append(r["pgn_str"]); res = r["result"]; aw = r["agent_is_white"]
+        if res == "1-0":
+            if aw: w += 1
+            else:  l += 1
+        elif res == "0-1":
+            if aw: l += 1
+            else:  w += 1
+        else:
+            d += 1
+
+    os.makedirs(os.path.dirname(pgn_path), exist_ok=True)
+    with open(pgn_path, "w") as f:
+        f.write("".join(parts))
+    print(f"  Saved {len(results)} games to {pgn_path}  (W{w}/D{d}/L{l})")
+
+    runner = BayesEloRunner(stockfish_elo=sf_elo)
+    res = runner.run(pgn_path)
+    if res:
+        res['win_count'] = w; res['loss_count'] = l; res['draw_count'] = d
+        res['total_games'] = len(results); res['win_rate'] = w / len(results) if results else 0.0
+    return res
+
+
+def run_arena_server_worker(worker_id, n_games, cand_in_q, cand_out_q, champ_in_q, champ_out_q,
+                            sims, worker_batch, max_moves, result_q, cand_shm, champ_shm):
+    """Play n_games of Candidate-vs-Champion. Each model's MCTS inference is routed to its OWN
+    shared GPU InferenceServer (candidate server + champion server), so the GPU holds exactly 2
+    model copies regardless of worker count — vs the old inline path that loaded 2 models ×
+    EVAL_WORKERS processes (OOM risk). Only one model searches at a time (turn-based), so the two
+    per-worker MCTSWorkers never have overlapping in-flight requests. Pushes one aggregate result
+    dict to result_q."""
+    setup_child_logging()
+    import chess, random
+    seed = worker_id + int(time.time()) % 10000
+    np.random.seed(seed); random.seed(seed)
+    cand = MCTSWorker(worker_id, cand_in_q, cand_out_q, simulations=sims, batch_size=worker_batch,
+                      seed=seed, shm_inp=cand_shm[0], shm_pol=cand_shm[1], shm_val=cand_shm[2])
+    champ = MCTSWorker(worker_id, champ_in_q, champ_out_q, simulations=sims, batch_size=worker_batch,
+                       seed=seed, shm_inp=champ_shm[0], shm_pol=champ_shm[1], shm_val=champ_shm[2])
+    w = d = l = fd = 0
+    try:
+        for gi in range(n_games):
+            game_id = worker_id * n_games + gi
+            game = ChessGame()
+            cand_is_white = (game_id % 2 == 0)
+            cand_label = "Cand" if cand_is_white else "Champ"
+            champ_label = "Champ" if cand_is_white else "Cand"
+            history = collections.deque(maxlen=7)
+            cand.reset_cache(); champ.reset_cache()
+            # Opening variety: one random legal first move (both trees track it).
+            legal = list(game.board.legal_moves)
+            if legal:
+                opening = random.choice(legal).uci()
+                history.appendleft(game.board.copy())
+                game.push(opening)
+                cand.advance_root(opening); champ.advance_root(opening)
+            try:
+                while not game.is_over and len(game.moves) < max_moves:
+                    is_cand_turn = ((game.board.turn == chess.WHITE) == cand_is_white)
+                    mover = cand if is_cand_turn else champ
+                    mv, _ = mover.search(game, temperature=0.0, history=list(history), use_dirichlet=False)
+                    if mv is None:
+                        break
+                    # Both trees track the same game line.
+                    cand.advance_root(mv); champ.advance_root(mv)
+                    history.appendleft(game.board.copy())
+                    game.push(mv)
+            except Exception as e:
+                print(f"[Arena Worker {worker_id}] game {game_id} error: {e}")
+                continue
+            if not game.is_over and len(game.moves) >= max_moves:
                 fd += 1
-        
-        result_str = f"Worker {worker_id}: {w}W - {d}D - {l}L - {fd}FD"
-        print(f" [Arena] {result_str}")
-        queue.put({"wins": w, "draws": d, "losses": l, "forced_draws": fd})
-    
-    except Exception as e:  # ← ADD THIS
+                print(f"Arena Game {game_id}: * ({cand_label} vs {champ_label}) | Moves: {len(game.moves)} (FORCED DRAW)")
+                continue
+            result = game.result
+            if result == "1-0":
+                w += 1 if cand_is_white else 0; l += 0 if cand_is_white else 1
+            elif result == "0-1":
+                l += 1 if cand_is_white else 0; w += 0 if cand_is_white else 1
+            else:
+                d += 1
+            print(f"Arena Game {game_id}: {result} ({cand_label} vs {champ_label}) | Moves: {len(game.moves)}")
+    except Exception as e:
         print(f"[Arena Worker {worker_id}] ❌ CRASHED: {e}")
-        import traceback
-        traceback.print_exc()
-        queue.put({"wins": 0, "draws": 0, "losses": 0, "forced_draws": 0})  # ← ALWAYS send result
+        import traceback; traceback.print_exc()
+    result_q.put({"wins": w, "draws": d, "losses": l, "forced_draws": fd})
+
+
+def run_arena_eval_gpu(cand_model, champ_model, num_games, sims, max_moves):
+    """Server-routed arena: candidate on one GPU InferenceServer, champion on another (2 model
+    copies total), CPU arena workers route each move to the right server. Returns aggregate
+    {wins, draws, losses, forced_draws} from the candidate's perspective."""
+    n_workers = max(1, min(num_games, EVAL_WORKERS))
+    per = [num_games // n_workers + (1 if i < num_games % n_workers else 0) for i in range(n_workers)]
+
+    print(f"  Arena: candidate + champion on 2 GPU servers, {n_workers} CPU workers ({num_games} games)")
+    cand_server, cand_sp, cand_wq, cand_shm = _start_inference_server(
+        cand_model, n_workers, WORKER_BATCH_SIZE, CUDA_BATCH_SIZE, CUDA_STREAMS, CUDA_TIMEOUT_INFERENCE)
+    champ_server, champ_sp, champ_wq, champ_shm = _start_inference_server(
+        champ_model, n_workers, WORKER_BATCH_SIZE, CUDA_BATCH_SIZE, CUDA_STREAMS, CUDA_TIMEOUT_INFERENCE)
+
+    result_q = mp.Queue()
+    workers = []
+    for i in range(n_workers):
+        p = mp.Process(target=run_arena_server_worker,
+                       args=(i, per[i], cand_server.input_queue, cand_wq[i],
+                             champ_server.input_queue, champ_wq[i], sims, WORKER_BATCH_SIZE,
+                             max_moves, result_q, cand_shm, champ_shm))
+        p.start(); workers.append(p)
+
+    totals = {"wins": 0, "draws": 0, "losses": 0, "forced_draws": 0}
+    for _ in range(n_workers):
+        try:
+            r = result_q.get(timeout=1800)
+            for k in totals:
+                totals[k] += r[k]
+        except Exception:
+            pass
+    for p in workers:
+        p.join(timeout=10)
+        if p.is_alive():
+            p.terminate(); p.join(timeout=5)
+    _stop_inference_server(cand_server, cand_sp)
+    _stop_inference_server(champ_server, champ_sp)
+    return totals
 
 # --- PHASES ---
 
@@ -405,7 +664,19 @@ def run_self_play_phase(iteration):
     print(f"\n=== ITERATION {iteration}: SELF-PLAY PHASE (Batched MCTS) ===")
     cleanup_memory() # Clear RAM before starting
     
-    server = InferenceServer(BEST_MODEL, batch_size=CUDA_BATCH_SIZE, timeout=CUDA_TIMEOUT_INFERENCE, streams=CUDA_STREAMS)
+    # Shared-memory transport buffers (allocated ONCE in the main process before spawn; torch's
+    # reducer pickles only the shm handle when passed via Process args). Per-worker slots sized
+    # to WORKER_BATCH_SIZE leaves. ~26 MB total at 64×8. None → legacy pickle-through-queue path.
+    if SHM_TRANSPORT:
+        shm_inp = torch.empty((NUM_WORKERS, WORKER_BATCH_SIZE, 120, 8, 8), dtype=torch.float32).share_memory_()
+        shm_pol = torch.empty((NUM_WORKERS, WORKER_BATCH_SIZE, 4672), dtype=torch.float32).share_memory_()
+        shm_val = torch.empty((NUM_WORKERS, WORKER_BATCH_SIZE, 3), dtype=torch.float32).share_memory_()
+        print(f"SHM transport ON: buffers inp/pol/val for {NUM_WORKERS}×{WORKER_BATCH_SIZE} slots")
+    else:
+        shm_inp = shm_pol = shm_val = None
+
+    server = InferenceServer(BEST_MODEL, batch_size=CUDA_BATCH_SIZE, timeout=CUDA_TIMEOUT_INFERENCE, streams=CUDA_STREAMS,
+                             shm_inp=shm_inp, shm_pol=shm_pol, shm_val=shm_val)
     worker_queues = [server.register_worker(i) for i in range(NUM_WORKERS)]
     
     server_process = mp.Process(target=run_server_wrapper, args=(server,))
@@ -444,7 +715,8 @@ def run_self_play_phase(iteration):
     workers = []
     for i in range(NUM_WORKERS):
         p = mp.Process(target=run_worker_batch,
-                       args=(i, server.input_queue, worker_queues[i], GAMES_PER_WORKER, iteration, games_counter))
+                       args=(i, server.input_queue, worker_queues[i], GAMES_PER_WORKER, iteration, games_counter,
+                             shm_inp, shm_pol, shm_val))
         p.start()
         workers.append(p)
         
@@ -538,127 +810,63 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss):
     print(f"\n=== ITERATION {iteration}: EVALUATION PHASE ===")
     cleanup_memory() # Clear VRAM before launching multiple evaluation workers
 
-    # 1. ARENA EVALUATION
-    print(f" [Arena] Playing {EVAL_WORKERS * GAMES_PER_EVAL_WORKER} games...")
-    ctx = mp.get_context('spawn')
-    arena_queue = ctx.Queue()
-    arena_workers = []
+    # 1. ARENA EVALUATION — candidate vs champion, each on its own GPU InferenceServer.
+    total_games = EVAL_WORKERS * GAMES_PER_EVAL_WORKER
+    print(f" [Arena] Playing {total_games} games (candidate vs champion, 2 GPU servers)...")
+    arena = run_arena_eval_gpu(CANDIDATE_MODEL, BEST_MODEL, total_games,
+                               EVAL_SIMULATIONS, EVAL_MAX_MOVES_PER_GAME)
+    total_wins, total_draws = arena['wins'], arena['draws']
+    total_losses, total_forced_draws = arena['losses'], arena['forced_draws']
 
-    for i in range(EVAL_WORKERS):
-        p = ctx.Process(
-            target=run_arena_batch_worker,
-            args=(i, arena_queue, GAMES_PER_EVAL_WORKER, CANDIDATE_MODEL, BEST_MODEL, EVAL_SIMULATIONS, EVAL_MAX_MOVES_PER_GAME)
-        )
-        p.start()
-        arena_workers.append(p)
-
-    # --- ACTIVE MONITORING FOR ARENA ---
-    try:
-        while True:
-            alive = [p for p in arena_workers if p.is_alive()]
-            if not alive:
-                print("✅ All arena workers finished.")
-                break
-            time.sleep(1)
-    except Exception as e:
-        print(f"❌ Arena evaluation failed: {e}")
-        for p in arena_workers:
-            if p.is_alive():
-                p.terminate()
-                p.join(timeout=1)
-        raise
-
-    
-    # Collect Arena Results — use fixed-count get() to avoid Queue.empty() race condition
-    total_wins, total_draws, total_losses, total_forced_draws = 0, 0, 0, 0
-    for _ in range(EVAL_WORKERS):
-        try:
-            res = arena_queue.get(timeout=5)
-            total_wins += res['wins']
-            total_draws += res['draws']
-            total_losses += res['losses']
-            total_forced_draws += res['forced_draws']
-        except Exception:
-            pass
-    
     total_score = total_wins + 0.5 * total_forced_draws + 0.5 * total_draws
     total_game_count = total_wins + total_draws + total_forced_draws + total_losses
     win_rate = total_score / total_game_count if total_game_count > 0 else 0
-    
+
     print(f" [Arena] Final Result: {win_rate*100:.1f}% Win Rate ({total_wins}W - {total_draws}D - {total_forced_draws}FD - {total_losses}L)")
-    
+
     est_elo = None
     arena_promoted = False
 
-    # 2. PROMOTION LOGIC
+    # 2. PROMOTION — the arena win-rate is the SOLE promotion gate.
     if win_rate >= 0.55:
-        print(f" [Arena] ⭐ Candidate PROMOTED! (WR > 55%) ⭐")
-        shutil.copyfile(CANDIDATE_MODEL, BEST_MODEL)
-        arena_promoted = True  # ← ADD THIS LINE
-    else:  # ← MOVE THIS FROM WRONG PLACE
-        print(f" [Arena] Candidate rejected (WR <= 55%). Running Stockfish evaluation anyway...")
-        
-    # 3. FETCH LAST CHAMPION ELO FROM METRICS
-    last_champion_elo = None
-    try:
-        _metrics_file = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "model", "metrics.json")
-        if os.path.exists(_metrics_file):
-            with open(_metrics_file, "r") as f:
-                metrics_history = json.load(f)
-                if metrics_history and len(metrics_history) > 0:
-                    # Get last entry with valid model elo (not stockfish_elo)
-                    for entry in reversed(metrics_history):
-                        if entry.get("model_elo") is not None:
-                            last_champion_elo = entry.get("model_elo")
-                            print(f" [Metrics] Last Champion Model Elo: {last_champion_elo:.0f}")
-                            break
-    except Exception as e:
-        print(f" [Metrics] Warning: Could not read metrics.json: {e}")
+        print(f" [Arena] ⭐ Candidate PROMOTED! (WR >= 55%) ⭐")
+        _promote_best()
+        arena_promoted = True
+    else:
+        print(f" [Arena] Candidate rejected (WR < 55%).")
 
-    
-    # 4. STOCKFISH EVALUATION
-    print(f" [Stockfish/BayesElo] Playing {STOCKFISH_GAMES} games vs Elo {STOCKFISH_ELO}...")
-    cleanup_memory()
-    
-    try:
-        sf_eval = StockfishEvaluator(STOCKFISH_PATH, EVAL_SIMULATIONS)
-        pgn_path = f"game_engine/evaluation/pgn/iter_{iteration}_{int(time.time())}.pgn"
-        
-        bayeselo_results = sf_eval.evaluate_with_bayeselo(
-            model_path=CANDIDATE_MODEL,
-            pgn_output_path=pgn_path,
-            num_games=STOCKFISH_GAMES,
-            stockfish_elo=STOCKFISH_ELO,
-            max_moves=EVAL_MAX_MOVES_PER_GAME
-        )
-        
-        if bayeselo_results:
-            est_elo = bayeselo_results['model_elo']
-            print(f" [BayesElo] ✅ Model Elo: {est_elo:.0f}")
-            print(f" [BayesElo] Record: {bayeselo_results['win_count']}-{bayeselo_results['draw_count']}-{bayeselo_results['loss_count']}")
-            
-            if not arena_promoted:
-                # 5. PROMOTION LOGIC: STOCKFISH-BASED
-                if last_champion_elo is not None and est_elo > last_champion_elo:
-                    print(f" [Stockfish] 🚀 CANDIDATE PROMOTED! ({est_elo:.0f} > {last_champion_elo:.0f})")
-                    shutil.copyfile(CANDIDATE_MODEL, BEST_MODEL)
-                elif last_champion_elo is None and est_elo > 1000:
-                    # Fallback: if no last Elo, promote if >1000 (basic competence)
-                    print(f" [Stockfish] 🚀 CANDIDATE PROMOTED! (First Elo: {est_elo:.0f})")
-                    shutil.copyfile(CANDIDATE_MODEL, BEST_MODEL)
-                else:
-                    print(f" [Stockfish] ❌ Candidate not promoted. ({est_elo:.0f} <= {last_champion_elo if last_champion_elo else None})")
-        else:
+    # 3. STOCKFISH EVALUATION — runs on the BEST model, and ONLY after a promotion (so the model
+    #    that just became champion gets an Elo measurement). It is metrics-only: it never promotes.
+    #    NO_PROMOTE is the dry-run/test mode — it exercises this phase without mutating the champion.
+    if arena_promoted or NO_PROMOTE:
+        print(f" [Stockfish/BayesElo] Playing {STOCKFISH_GAMES} games vs Elo {STOCKFISH_ELO} (BEST model)...")
+        cleanup_memory()
+        try:
+            pgn_path = f"game_engine/evaluation/pgn/iter_{iteration}_{int(time.time())}.pgn"
+            # Server-routed: BEST model inference on ONE GPU server (batched), Stockfish on CPU.
+            bayeselo_results = run_stockfish_eval_gpu(
+                model_path=BEST_MODEL,
+                num_games=STOCKFISH_GAMES,
+                stockfish_path=STOCKFISH_PATH,
+                sims=EVAL_SIMULATIONS,
+                sf_elo=STOCKFISH_ELO,
+                max_moves=EVAL_MAX_MOVES_PER_GAME,
+                pgn_path=pgn_path,
+            )
+            if bayeselo_results:
+                est_elo = bayeselo_results['model_elo']
+                print(f" [BayesElo] ✅ Model Elo: {est_elo:.0f}")
+                print(f" [BayesElo] Record: {bayeselo_results['win_count']}-{bayeselo_results['draw_count']}-{bayeselo_results['loss_count']}")
+            else:
+                print(f" [BayesElo] ❌ Failed to compute")
+        except Exception as e:
+            print(f" [BayesElo] ❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
             est_elo = None
-            print(f" [BayesElo] ❌ Failed to compute")
-            
-    except Exception as e:
-        print(f" [BayesElo] ❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
-        est_elo = None
-            
+    else:
+        print(f" [Stockfish] Skipped (candidate not promoted).")
+
     logger.log(iteration, p_loss, v_loss, win_rate, est_elo, stockfish_elo=STOCKFISH_ELO)
 
 if __name__ == "__main__":

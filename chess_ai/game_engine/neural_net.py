@@ -9,22 +9,65 @@ import queue
 from game_engine.cnn import ChessCNN
 
 class InferenceServer:
-    def __init__(self, model_path, batch_size=512, timeout=0.1, streams=4):
+    def __init__(self, model_path, batch_size=512, timeout=0.1, streams=4,
+                 shm_inp=None, shm_pol=None, shm_val=None):
         self.model_path = model_path
         self.batch_size = batch_size
         self.timeout = timeout
         self.num_streams = streams
-        
+
+        # Shared-memory transport: bulk leaf/result tensors live in these per-worker-slotted
+        # buffers (NUM_WORKERS, WORKER_BATCH_SIZE, ...). When present, the queues carry only
+        # tiny (worker_id, N) control signals instead of pickled tensors. None → legacy path.
+        self.shm_inp = shm_inp
+        self.shm_pol = shm_pol
+        self.shm_val = shm_val
+        self.shm = shm_inp is not None
+
         self.input_queue = mp.Queue()
-        self.output_queues = {} 
+        self.output_queues = {}
 
     def register_worker(self, worker_id):
         self.output_queues[worker_id] = mp.Queue()
         return self.output_queues[worker_id]
 
-    def process_batch(self, batch_data, stream, model, device):
+    def process_batch(self, batch_data, stream_idx, model, device):
         if not batch_data: return
+        stream = self.streams[stream_idx]
 
+        # ── Shared-memory path ───────────────────────────────────────────────────
+        # batch_data is a list of (worker_id, N). Gather each worker's N leaves from its
+        # shared input slot into this stream's pinned staging buffer (one contiguous H2D),
+        # run the model, then scatter raw logits back into the shared output slots and
+        # signal each worker with a tiny (N,) tuple. Each worker_id appears at most once
+        # per in-flight batch (single-outstanding-request invariant), and staging is
+        # per-stream, so concurrent process_batch calls never touch the same memory.
+        if self.shm:
+            stage = self.stages[stream_idx]
+            cursor = 0
+            for wid, n in batch_data:
+                stage[cursor:cursor + n] = self.shm_inp[wid, :n]
+                cursor += n
+            total = cursor
+
+            with torch.cuda.stream(stream):
+                mega_gpu = stage[:total].to(device, non_blocking=True)
+                with torch.no_grad():
+                    pol_gpu, val_gpu = model(mega_gpu)
+                del mega_gpu
+            pol = pol_gpu.cpu()   # blocking — syncs the stream
+            val = val_gpu.cpu()
+            del pol_gpu, val_gpu
+
+            cursor = 0
+            for wid, n in batch_data:
+                self.shm_pol[wid, :n] = pol[cursor:cursor + n]
+                self.shm_val[wid, :n] = val[cursor:cursor + n]
+                cursor += n
+                self.output_queues[wid].put((n,))
+            return
+
+        # ── Legacy path (tensors pickled through the queue) ──────────────────────
         worker_ids = [item[0] for item in batch_data]
         raw_tensors = [item[1] for item in batch_data]
 
@@ -63,6 +106,17 @@ class InferenceServer:
         model = ChessCNN().to(self.device)
         self.streams = [torch.cuda.Stream() for _ in range(self.num_streams)]
         self.current_stream_idx = 0
+
+        # One pinned staging buffer per stream (so concurrent process_batch calls on
+        # different streams never share a buffer). Sized batch_size + one worker slot to
+        # cover the gather loop's last-item overshoot. Only needed for the SHM path.
+        if self.shm:
+            assert self.shm_inp.is_shared(), "shm_inp not in shared memory — check Process args"
+            slot = self.shm_inp.shape[1]
+            cap = self.batch_size + slot
+            pin = (self.device.type == "cuda")   # pinning only helps (and only works) with CUDA
+            self.stages = [torch.empty((cap, 120, 8, 8), dtype=torch.float32, pin_memory=pin)
+                           for _ in range(self.num_streams)]
         
         print(f"Server: Loading model from {self.model_path}")
         checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=True)
@@ -99,13 +153,16 @@ class InferenceServer:
                     item = self.input_queue.get(timeout=0.01)
                     if item == "STOP":
                         if batch_data:
-                            stream = self.streams[self.current_stream_idx]
-                            executor.submit(self.process_batch, batch_data, stream, model, self.device)
+                            executor.submit(self.process_batch, batch_data, self.current_stream_idx, model, self.device)
                         executor.shutdown(wait=True)
                         return
 
-                    tensor = item[1]
-                    item_size = tensor.shape[0] if tensor.ndim == 4 else 1
+                    if self.shm:
+                        # item is (worker_id, N) — N leaves already written to shm_inp[wid].
+                        wid, item_size = item
+                    else:
+                        tensor = item[1]
+                        item_size = tensor.shape[0] if tensor.ndim == 4 else 1
                     batch_data.append(item)
                     current_batch_count += item_size
 
@@ -116,9 +173,9 @@ class InferenceServer:
                     break
 
             if batch_data:
-                stream = self.streams[self.current_stream_idx]
+                stream_idx = self.current_stream_idx
                 self.current_stream_idx = (self.current_stream_idx + 1) % self.num_streams
-                fut = executor.submit(self.process_batch, batch_data, stream, model, self.device)
+                fut = executor.submit(self.process_batch, batch_data, stream_idx, model, self.device)
                 pending_futures.append(fut)
 
                 last_successful_batch_time = time.time()
