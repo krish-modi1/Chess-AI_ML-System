@@ -19,7 +19,11 @@ std::pair<std::string, std::shared_ptr<MCTSNode>> MCTSNode::select_child() {
         float u_value = cpuct * child->prior * sqrt_parent_visits / (1.0f + child_visits);
         float score = q_value + u_value;
 
-        if (score > best_score) {
+        // `!best_child` forces the first child to always be selected, so this never returns a
+        // null child even when every score is NaN. A non-finite NN prior/value makes `score`
+        // NaN, and `NaN > x` is always false — previously that left best_child null, and the
+        // caller then dereferenced a null node (reading children at offset 0x140 → segfault).
+        if (!best_child || score > best_score) {
             best_score = score;
             best_action = action;
             best_child = child;
@@ -39,15 +43,20 @@ void MCTSNode::expand(const std::vector<std::string>& valid_moves,
     for (const auto& move_str : valid_moves) {
         int idx = move_to_index(move_str);
         float logit = (idx < (int)policy_logits.size()) ? policy_logits[idx] : -10.0f;
+        // A non-finite NN logit (fp16 overflow → inf/nan) would make exp() inf/nan and poison
+        // every PUCT score with NaN. Clamp to a finite range so priors stay well-defined.
+        if (!std::isfinite(logit)) logit = -10.0f;
+        if (logit > 30.0f) logit = 30.0f;          // exp(30)≈1e13; exp(88)=inf → avoid overflow
         float prob = std::exp(logit);
         move_probs[move_str] = prob;
         policy_sum += prob;
     }
 
     for (const auto& move : valid_moves) {
-        float normalized_prior = (policy_sum > 0) ?
+        float normalized_prior = (policy_sum > 0 && std::isfinite(policy_sum)) ?
             move_probs[move] / policy_sum :
             1.0f / valid_moves.size();
+        if (!std::isfinite(normalized_prior)) normalized_prior = 1.0f / valid_moves.size();
 
         ChessBoard child_board = board.copy();   // pure C++ — no GIL crossing
         child_board.push(move);                  // pure C++

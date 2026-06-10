@@ -167,11 +167,17 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
     
     if hasattr(os, 'sched_setaffinity'):
         try:
-            cpu_count = len(os.sched_getaffinity(0)) or os.cpu_count() or 32
-            os.sched_setaffinity(0, {worker_id % cpu_count})
+            total = len(os.sched_getaffinity(0)) or os.cpu_count() or 32
+            # Reserve the top RESERVED_CORES for the OS + the GPU-feeding inference server, so
+            # workers never contend with the server (a starved server can fall behind, trip its
+            # deadlock timeout, self-kill, and then every worker hangs). Workers fill cores
+            # [0 .. total-reserve-1]; e.g. 32 vCPU, reserve=2 → workers on 0-29, server/OS on 30-31.
+            reserve = int(os.environ.get("RESERVED_CORES", 0))
+            worker_cores = max(1, total - reserve)
+            os.sched_setaffinity(0, {worker_id % worker_cores})
         except Exception:
             pass  # CPU affinity is optional; ignore if not supported
-    
+
     setup_child_logging()
     
     iter_dir = os.path.join(DATA_DIR, f"iter_{iteration}")
@@ -338,9 +344,14 @@ def run_server_wrapper(server):
     if hasattr(os, 'sched_setaffinity'):
         try:
             available = sorted(os.sched_getaffinity(0))
-            # Pin server to the last 4 CPUs in the affinity set
-            server_cpus = set(available[-4:]) if len(available) >= 4 else set(available)
-            os.sched_setaffinity(0, server_cpus)
+            # Pin the server to the RESERVED top cores — dedicated, since workers are confined to
+            # [0 .. total-reserve-1] (see run_worker_batch). This keeps the GPU-feeding server off
+            # the contended worker cores. Fall back to the last 4 when no cores are reserved.
+            reserve = int(os.environ.get("RESERVED_CORES", 0))
+            n = reserve if reserve > 0 else min(4, len(available))
+            server_cpus = set(available[-n:]) if available else set()
+            if server_cpus:
+                os.sched_setaffinity(0, server_cpus)
         except Exception:
             pass  # CPU affinity is optional; ignore if not supported
         

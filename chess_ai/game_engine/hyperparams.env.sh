@@ -28,9 +28,12 @@ export OMP_WAIT_POLICY=PASSIVE   # if any OMP region remains, idle threads sleep
 #     wait on inference. At a ~20-25% CPU duty cycle that balances ~64 workers against 16 cores.
 #   - RAM is not the limit: 64 × ~0.4 GB ≈ 25 GB of 126 GB (no per-worker CUDA context; the
 #     single server process owns the GPU).
-# 64 is calibrated to the 16 physical cores. Tune via `nvidia-smi` + load average: if GPU util
-# < ~85% AND load avg < ~28, raise toward 80-96; if load avg pins near/over 32, back off.
-export NUM_WORKERS=64
+# 60 workers on 30 cores (2 per core), with RESERVED_CORES=2 keeping the GPU-feeding inference
+# server + OS on the top 2 cores (dedicated, no worker contention). A starved server can fall
+# behind, trip its deadlock timeout, self-kill, and hang every worker — reserving cores prevents
+# that cascade. Tune via load average + nvidia-smi.
+export NUM_WORKERS=60
+export RESERVED_CORES=2
 
 # Per-worker MCTS leaf batch = leaves submitted to the inference server per search iteration.
 # num_iterations = SIMULATIONS / WORKER_BATCH_SIZE. 8 → num_iter=100 = full AlphaZero-quality
