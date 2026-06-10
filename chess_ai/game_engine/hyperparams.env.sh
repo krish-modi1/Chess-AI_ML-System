@@ -7,6 +7,18 @@
 #
 # Exports the full env-var contract consumed by game_engine/main.py.
 
+# ── CRITICAL: pin every process to ONE CPU thread ─────────────────────────────────────────────
+# We parallelise across NUM_WORKERS *processes*, not threads. But numpy/MKL/OpenBLAS/torch each
+# spin up a thread pool sized to the box (≈16–32) PER process, and idle OpenMP threads spin-wait
+# (busy-loop) → 64 workers × ~16 threads ≈ 1000 threads thrashing 32 vCPUs (observed load avg
+# ~570, per-worker 11 sim/s vs ~45 with 1 thread). Pinning to 1 thread each removes the thrash;
+# the GPU then gets fed and self-play throughput multiplies. Set BEFORE python imports torch.
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+export OMP_WAIT_POLICY=PASSIVE   # if any OMP region remains, idle threads sleep instead of spinning
+
 # Heavily oversubscribed: with the small WORKER_BATCH_SIZE below, each search does ~100
 # inference round-trips per move, so a worker spends most of its time BLOCKED waiting on the
 # GPU. Oversubscribing keeps the CPU busy (ready workers run while others wait) AND feeds the

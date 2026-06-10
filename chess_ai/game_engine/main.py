@@ -84,6 +84,13 @@ class Logger(object):
 def setup_child_logging():
     sys.stdout = Logger()
     sys.stderr = sys.stderr
+    # Pin this process to 1 CPU thread. We parallelise across worker PROCESSES; letting each also
+    # spin up a torch/MKL intra-op thread pool (≈cores per process) thrashes the box (load ~570 on
+    # 32 vCPUs). Belt-and-suspenders to the OMP_NUM_THREADS=1 env in hyperparams.env.sh.
+    try:
+        torch.set_num_threads(1)
+    except Exception:
+        pass
 
 def queue_monitor_thread(queue):
     while True:
