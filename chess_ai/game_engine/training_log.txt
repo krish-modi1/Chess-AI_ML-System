@@ -1,0 +1,76 @@
+⏱️ Deadlock timeout: 30 hour per iteration
+============================================================
+STARTING RUN
+Resuming from Iteration: 1
+Workers: 64 | Sims: 800 | Batch: 8
+============================================================
+
+============================================================
+ITERATION 1 - PHASE 1: SELF-PLAY
+============================================================
+
+=== ITERATION 1: SELF-PLAY PHASE (Batched MCTS) ===
+⏱️ Deadlock timeout: 30 hour per iteration
+============================================================
+STARTING RUN
+Resuming from Iteration: 2
+Workers: 64 | Sims: 800 | Batch: 8
+============================================================
+
+============================================================
+ITERATION 2 - PHASE 1: SELF-PLAY
+============================================================
+
+=== ITERATION 2: SELF-PLAY PHASE (Batched MCTS) ===
+⏱️ Deadlock timeout: 30 hour per iteration
+============================================================
+STARTING RUN
+Resuming from Iteration: 2
+Workers: 64 | Sims: 800 | Batch: 8
+============================================================
+
+============================================================
+ITERATION 2 - PHASE 1: SELF-PLAY
+============================================================
+
+=== ITERATION 2: SELF-PLAY PHASE (Batched MCTS) ===
+SHM transport ON: buffers inp/pol/val for 64×8 slots
+⏱️ Deadlock timeout: 30 hour per iteration
+============================================================
+STARTING RUN
+Resuming from Iteration: 1
+Workers: 64 | Sims: 800 | Batch: 8
+============================================================
+
+============================================================
+ITERATION 1 - PHASE 1: SELF-PLAY
+============================================================
+
+=== ITERATION 1: SELF-PLAY PHASE (Batched MCTS) ===
+SHM transport ON: buffers inp/pol/val for 64×8 slots
+⏱️ Deadlock timeout: 30 hour per iteration
+============================================================
+STARTING RUN
+Resuming from Iteration: 2
+Workers: 64 | Sims: 800 | Batch: 8
+============================================================
+
+============================================================
+ITERATION 2 - PHASE 1: SELF-PLAY
+============================================================
+
+=== ITERATION 2: SELF-PLAY PHASE (Batched MCTS) ===
+SHM transport ON: buffers inp/pol/val for 64×8 slots
+⏱️ Deadlock timeout: 30 hour per iteration
+============================================================
+STARTING RUN
+Resuming from Iteration: 1
+Workers: 64 | Sims: 800 | Batch: 8
+============================================================
+
+============================================================
+ITERATION 1 - PHASE 1: SELF-PLAY
+============================================================
+
+=== ITERATION 1: SELF-PLAY PHASE (Batched MCTS) ===
+SHM transport ON: buffers inp/pol/val for 64×8 slots
