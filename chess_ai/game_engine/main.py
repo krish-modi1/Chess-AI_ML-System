@@ -314,7 +314,7 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                 cur_sims = worker.mcts_engine.simulations
                 nps = cur_sims / dur if dur > 0 else 0
                 print(f" [Worker {worker_id}] Move {move_count+1}: {best_move} "
-                      f"({dur:.2f}s | {nps:.0f} sim/s | {cur_sims} sims)")
+                      f"({dur:.2f}s | {nps:.0f} sim/s | {cur_sims} sims | v={worker.last_root_value:+.2f})")
         except Exception as e:
             print(f" [Worker {worker_id}] ❌ ERROR during game {i+1}: {e}")
             import traceback
