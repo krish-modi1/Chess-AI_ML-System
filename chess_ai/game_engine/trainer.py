@@ -486,6 +486,9 @@ def train_model(data_path="data/self_play",
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
+        'epoch': epoch + 1,
+        'val_policy_loss': va_p_avg,
+        'val_value_loss': va_v_avg,
     }, output_model_path)
     print(f"New model saved to {output_model_path}")
 
