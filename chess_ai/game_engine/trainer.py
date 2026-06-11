@@ -294,6 +294,8 @@ def train_model(data_path="data/self_play",
     # 2. Load Model
     model = ChessCNN().to(device)
     checkpoint = None
+    anchor = None
+    KL_ANCHOR_BETA = float(os.environ.get("KL_ANCHOR_BETA", 0.0))
 
     if os.path.exists(input_model_path):
         print(f"Loading training base from {input_model_path}")
@@ -311,6 +313,15 @@ def train_model(data_path="data/self_play",
             if any(k.startswith('_orig_mod.') for k in sd):
                 sd = {k.removeprefix('_orig_mod.'): v for k, v in sd.items()}
             model.load_state_dict(sd)
+            # KL-anchor: a frozen copy of the pretrained base. Its policy is the prior the
+            # candidate is penalized for drifting from (anti-forgetting on small early data).
+            if KL_ANCHOR_BETA > 0:
+                anchor = ChessCNN().to(device)
+                anchor.load_state_dict(sd)
+                anchor.eval()
+                for p in anchor.parameters():
+                    p.requires_grad_(False)
+                print(f"KL-anchor ON: beta={KL_ANCHOR_BETA} (frozen pretrained prior)")
         except Exception as e:
             print(f"Error loading model, starting fresh: {e}")
     else:
@@ -384,7 +395,7 @@ def train_model(data_path="data/self_play",
 
         # ── Train pass ─────────────────────────────────────────────────────────
         model.train()
-        tr_p = tr_v = tr_acc = g_norm = 0.0
+        tr_p = tr_v = tr_acc = g_norm = tr_kl = 0.0
         n_tr = 0
 
         train_bar = tqdm(_train_batches(), total=batches_per_epoch,
@@ -396,6 +407,15 @@ def train_model(data_path="data/self_play",
 
             optimizer.zero_grad(set_to_none=True)
 
+            # Anchor logits FIRST (no_grad/fp16), freed before training activations accumulate,
+            # so only the (B,4672) log-probs (~38 MB) persist — no VRAM overlap with backward.
+            anchor_logp = None
+            if anchor is not None:
+                with torch.no_grad(), torch.amp.autocast(device_type=device.type):
+                    a_logits, _ = anchor(states)
+                anchor_logp = torch.log_softmax(a_logits.float(), dim=1)
+                del a_logits
+
             with torch.amp.autocast(device_type=device.type):
                 pred_policies, pred_values = model(states)
                 v_loss = ce_value_loss(pred_values, target_values)
@@ -406,6 +426,12 @@ def train_model(data_path="data/self_play",
             log_probs = torch.log_softmax(pred_policies.float(), dim=1).clamp(min=-100.0)
             p_loss = -(target_policies.nan_to_num(0.0) * log_probs).sum(dim=1).mean()
             loss   = v_loss + p_loss
+
+            if anchor_logp is not None:
+                # KL(anchor ‖ candidate): hold the policy near the pretrained prior.
+                kl = (anchor_logp.exp() * (anchor_logp - log_probs)).sum(dim=1).mean()
+                loss = loss + KL_ANCHOR_BETA * kl
+                tr_kl += float(kl.item())
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -463,6 +489,7 @@ def train_model(data_path="data/self_play",
         tr_acc_pct = tr_acc / max(n_tr, 1) * 100
         va_acc_pct = va_acc / max(n_va, 1) * 100
         gn_avg     = g_norm / max(n_tr, 1)
+        kl_avg     = tr_kl  / max(n_tr, 1)
         lr         = scheduler.get_last_lr()[0]
         elapsed    = int(time.time() - epoch_start)
 
@@ -474,7 +501,8 @@ def train_model(data_path="data/self_play",
         print(f"{epoch+1:>3}/{epochs:<3}  {tr_p_avg:>7.4f}  {tr_v_avg:>7.4f}"
               f"  {va_p_avg:>7.4f}  {va_v_avg:>7.4f}"
               f"  {tr_acc_pct:>6.1f}%  {va_acc_pct:>6.1f}%"
-              f"  {gn_avg:>7.3f}  {lr:>10.2e}  {elapsed:>4}s{marker}")
+              f"  {gn_avg:>7.3f}  {lr:>10.2e}  {elapsed:>4}s{marker}"
+              f"{'  KL='+format(kl_avg,'.3f') if anchor is not None else ''}")
         sys.stdout.flush()
 
         last_p_loss = tr_p_avg

@@ -494,6 +494,9 @@ TRAIN_WINDOW = int(os.environ.get("TRAIN_WINDOW", 20))   # train on the last 20 
 # small local GPUs — backprop activation memory across 20 blocks scales with batch size.
 TRAIN_BATCH_SIZE = int(os.environ.get("TRAIN_BATCH_SIZE", 2048))
 TRAIN_LR = float(os.environ.get("TRAIN_LR", 3e-4))   # gentler AdamW fine-tune from pretrained; fewer fp16 overflows
+# Warmup: generate self-play only until this many iterations of data exist, then start training.
+# Avoids overwriting the pretrained net on a tiny first-iteration window. 1 = train every iter.
+MIN_TRAIN_ITERS = int(os.environ.get("MIN_TRAIN_ITERS", 1))
 
 # --- DRY WORKER WRAPPERS ---
 
@@ -1015,8 +1018,15 @@ if __name__ == "__main__":
                 print("[Main] Saving state and exiting. Training/Eval will resume on next startup.")
                 break
 
+            # Lever 3: warmup — skip training/eval until enough iterations of data accumulate
+            # (champion unchanged; just keep generating self-play to fill the replay window).
+            do_train = it >= MIN_TRAIN_ITERS
+            if resume_phase <= 2 and not do_train:
+                print(f"\n⏭  ITERATION {it} - WARMUP: {it}/{MIN_TRAIN_ITERS} data iters — self-play only, skipping training+eval")
+                save_phase(it, "eval")
+
             # === PHASE 2: TRAINING ===
-            if resume_phase <= 2:
+            if resume_phase <= 2 and do_train:
                 print(f"\n{'='*60}")
                 print(f"ITERATION {it} - PHASE 2: TRAINING")
                 print(f"{'='*60}")
@@ -1039,7 +1049,7 @@ if __name__ == "__main__":
                 break
 
             # === PHASE 3: EVALUATION ===
-            if resume_phase <= 3:
+            if resume_phase <= 3 and do_train:
                 if SKIP_EVAL:
                     print(f"\n{'='*60}")
                     print(f"ITERATION {it} - PHASE 3: EVALUATION SKIPPED (SKIP_EVAL=1)")
