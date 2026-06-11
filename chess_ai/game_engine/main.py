@@ -5,6 +5,7 @@ import sys
 import time
 import shutil
 import gc
+import json
 import collections
 import torch
 import torch.multiprocessing
@@ -114,6 +115,37 @@ def get_start_iteration(data_dir):
         return max(nums) + 1
     except ValueError:
         return 1
+
+# Phase-level checkpoint. get_start_iteration() only sees self-play data dirs, so it treats
+# "self-play done" as "iteration done" and would skip an iteration's training+eval if the run
+# stopped between phases. run_state.json records the last completed phase so a restart resumes
+# at the NEXT phase of the same iteration.
+_PHASES = ("self_play", "training", "eval")
+
+def save_phase(iteration, phase):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = RUN_STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"iteration": iteration, "phase": phase}, f)
+    os.replace(tmp, RUN_STATE_FILE)  # atomic write
+
+def load_resume_point():
+    """Return (start_iteration, start_phase) where start_phase is 1=self-play, 2=training,
+    3=eval — the phase the FIRST iteration of this run should begin at. Falls back to the
+    data-dir scan (fresh self-play of the next iteration) when no phase checkpoint exists."""
+    data_iter = get_start_iteration(DATA_DIR)
+    if not os.path.exists(RUN_STATE_FILE):
+        return data_iter, 1
+    try:
+        with open(RUN_STATE_FILE) as f:
+            st = json.load(f)
+        it = int(st["iteration"])
+        done = _PHASES.index(st["phase"]) + 1          # phases completed so far
+        if done >= len(_PHASES):
+            return it + 1, 1                           # whole iteration done → next, fresh
+        return it, done + 1                            # resume at the phase after the last done
+    except Exception:
+        return data_iter, 1
 
 def cleanup_memory():
     """Forces garbage collection and clears CUDA cache to prevent OOM"""
@@ -390,6 +422,7 @@ STOCKFISH_PATH = os.environ.get("STOCKFISH_PATH", "/usr/games/stockfish")
 LOG_FILE = "training_log.txt"
 MODEL_DIR = "game_engine/model"
 DATA_DIR = "data/self_play"
+RUN_STATE_FILE = os.path.join(DATA_DIR, "run_state.json")
 BEST_MODEL = f"{MODEL_DIR}/best_model.pth"
 CANDIDATE_MODEL = f"{MODEL_DIR}/candidate.pth"
 
@@ -930,11 +963,11 @@ if __name__ == "__main__":
     print("⏱️ Deadlock timeout: 30 hour per iteration")
 
     # RESUMPTION LOGIC
-    start_iter = get_start_iteration(DATA_DIR)
-    
+    start_iter, start_phase = load_resume_point()
+
     print("=" * 60)
     print(f"STARTING RUN")
-    print(f"Resuming from Iteration: {start_iter}")
+    print(f"Resuming from Iteration: {start_iter} (phase {start_phase}: {_PHASES[start_phase-1]})")
     print(f"Workers: {NUM_WORKERS} | Sims: {SIMULATIONS} | Batch: {WORKER_BATCH_SIZE}")
     print("=" * 60)
 
@@ -950,72 +983,82 @@ if __name__ == "__main__":
                 break
             
             iter_start = time.time()
-            
+            # Only the first (resumed) iteration may start mid-way; every later iteration
+            # runs all phases from the top. p_loss/v_loss default for the resume-into-eval case.
+            resume_phase = start_phase if it == start_iter else 1
+            p_loss, v_loss = 0.0, 0.0
+
             # === PHASE 1: SELF-PLAY ===
-            print(f"\n{'='*60}")
-            print(f"ITERATION {it} - PHASE 1: SELF-PLAY")
-            print(f"{'='*60}")
-            
-            if RESUME_ITERATION is not None and it == RESUME_ITERATION:
-                print(f"⏭️  ITERATION {it} - SKIPPING SELF-PLAY (using existing data)")
-                print(f"✅ ITERATION {it} - PHASE 1 COMPLETE (skipped)")
-            else:
-                try:
-                    run_self_play_phase(it)
-                    print(f"✅ ITERATION {it} - PHASE 1 COMPLETE")
-                except Exception as e:
-                    print(f"❌ ITERATION {it} - PHASE 1 FAILED: {e}")
-                    if killer.kill_now:
-                        print("[Main] Kill signal during Phase 1. Exiting...")
-                        break
-                    raise
-            
+            if resume_phase <= 1:
+                print(f"\n{'='*60}")
+                print(f"ITERATION {it} - PHASE 1: SELF-PLAY")
+                print(f"{'='*60}")
+
+                if RESUME_ITERATION is not None and it == RESUME_ITERATION:
+                    print(f"⏭️  ITERATION {it} - SKIPPING SELF-PLAY (using existing data)")
+                    print(f"✅ ITERATION {it} - PHASE 1 COMPLETE (skipped)")
+                else:
+                    try:
+                        run_self_play_phase(it)
+                        print(f"✅ ITERATION {it} - PHASE 1 COMPLETE")
+                    except Exception as e:
+                        print(f"❌ ITERATION {it} - PHASE 1 FAILED: {e}")
+                        if killer.kill_now:
+                            print("[Main] Kill signal during Phase 1. Exiting...")
+                            break
+                        raise
+                save_phase(it, "self_play")
+
             # CHECK AFTER PHASE 1
             if killer.kill_now:
                 print("\n[Main] ⚠️  Kill signal received AFTER Phase 1")
-                print("[Main] Saving state and exiting. Training/Eval will run on next startup.")
+                print("[Main] Saving state and exiting. Training/Eval will resume on next startup.")
                 break
-            
+
             # === PHASE 2: TRAINING ===
-            print(f"\n{'='*60}")
-            print(f"ITERATION {it} - PHASE 2: TRAINING")
-            print(f"{'='*60}")
-            
-            try:
-                p_loss, v_loss = run_training_phase(it)
-                print(f"\n✅ ITERATION {it} - PHASE 2 COMPLETE (Policy Loss: {p_loss:.4f}, Value Loss: {v_loss:.4f})")
-            except Exception as e:
-                print(f"\n❌ ITERATION {it} - PHASE 2 FAILED: {e}")
-                if killer.kill_now:
-                    print("[Main] Kill signal during Phase 2. Exiting...")
-                    break
-                raise
-            
-            # CHECK AFTER PHASE 2
-            if killer.kill_now:
-                print("\n[Main] ⚠️  Kill signal received AFTER Phase 2")
-                print("[Main] Saving state and exiting. Eval will run on next startup.")
-                break
-            
-            # === PHASE 3: EVALUATION ===
-            if SKIP_EVAL:
+            if resume_phase <= 2:
                 print(f"\n{'='*60}")
-                print(f"ITERATION {it} - PHASE 3: EVALUATION SKIPPED (SKIP_EVAL=1)")
-                print(f"{'='*60}")
-            else:
-                print(f"\n{'='*60}")
-                print(f"ITERATION {it} - PHASE 3: EVALUATION")
+                print(f"ITERATION {it} - PHASE 2: TRAINING")
                 print(f"{'='*60}")
 
                 try:
-                    run_evaluation_phase(it, MetricsLogger(), p_loss, v_loss)
-                    print(f"\n✅ ITERATION {it} - PHASE 3 COMPLETE")
+                    p_loss, v_loss = run_training_phase(it)
+                    print(f"\n✅ ITERATION {it} - PHASE 2 COMPLETE (Policy Loss: {p_loss:.4f}, Value Loss: {v_loss:.4f})")
                 except Exception as e:
-                    print(f"\n❌ ITERATION {it} - PHASE 3 FAILED: {e}")
+                    print(f"\n❌ ITERATION {it} - PHASE 2 FAILED: {e}")
                     if killer.kill_now:
-                        print("[Main] Kill signal during Phase 3. Exiting...")
+                        print("[Main] Kill signal during Phase 2. Exiting...")
                         break
                     raise
+                save_phase(it, "training")
+
+            # CHECK AFTER PHASE 2
+            if killer.kill_now:
+                print("\n[Main] ⚠️  Kill signal received AFTER Phase 2")
+                print("[Main] Saving state and exiting. Eval will resume on next startup.")
+                break
+
+            # === PHASE 3: EVALUATION ===
+            if resume_phase <= 3:
+                if SKIP_EVAL:
+                    print(f"\n{'='*60}")
+                    print(f"ITERATION {it} - PHASE 3: EVALUATION SKIPPED (SKIP_EVAL=1)")
+                    print(f"{'='*60}")
+                else:
+                    print(f"\n{'='*60}")
+                    print(f"ITERATION {it} - PHASE 3: EVALUATION")
+                    print(f"{'='*60}")
+
+                    try:
+                        run_evaluation_phase(it, MetricsLogger(), p_loss, v_loss)
+                        print(f"\n✅ ITERATION {it} - PHASE 3 COMPLETE")
+                    except Exception as e:
+                        print(f"\n❌ ITERATION {it} - PHASE 3 FAILED: {e}")
+                        if killer.kill_now:
+                            print("[Main] Kill signal during Phase 3. Exiting...")
+                            break
+                        raise
+                save_phase(it, "eval")
             
             # === ITERATION COMPLETE ===
             iter_end = time.time()

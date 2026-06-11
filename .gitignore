@@ -290,3 +290,5 @@ build/
 Presentation/
 chess_ai/game_engine/mcts_engine_cpp*.so
 local/
+# Phase-resume checkpoint (ephemeral, regenerated each run)
+run_state.json
