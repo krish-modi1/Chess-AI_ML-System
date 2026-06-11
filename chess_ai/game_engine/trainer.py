@@ -61,6 +61,10 @@ def _build_h_flip_perm():
 
 _H_FLIP_PERM = _build_h_flip_perm()
 
+# Thin draw games to at most this many positions when loading the training buffer (load-time
+# only; the .npz on disk is untouched). Curbs draw-label over-representation. 0 = disabled.
+DRAW_MAX_POSITIONS = int(os.environ.get("DRAW_MAX_POSITIONS", 0))
+
 def scan_window_files(data_dir, window_size=20):
     """Scan the last `window_size` iteration folders and return [(path, n_positions)] for every
     valid .npz, NEWEST-iteration-first (so a downstream cap/chunk keeps the most recent data).
@@ -142,6 +146,7 @@ class ChessDataset(Dataset):
         print(f"Loading {total:,} positions into RAM...")
         pos = 0
         skipped = 0
+        thinned = 0
         game_id = 0
         for f, take in load_plan:
             try:
@@ -155,6 +160,14 @@ class ChessDataset(Dataset):
                 if not (np.isfinite(s).all() and np.isfinite(p).all()):
                     skipped += 1
                     continue
+                # Thin long DRAW games at load time so they don't over-represent draw labels in
+                # the buffer (~46% of positions were draw-labeled vs ~23% of games), which flattens
+                # the value head. The full .npz on disk is untouched. Decisive games kept whole.
+                if DRAW_MAX_POSITIONS > 0 and len(v) > DRAW_MAX_POSITIONS and (v == 1).all():
+                    keep = np.unique(np.linspace(0, len(v) - 1, DRAW_MAX_POSITIONS).astype(int))
+                    thinned += len(v) - len(keep)
+                    s, p, v = s[keep], p[keep], v[keep]
+                    take = len(v)
                 _s[pos:pos + take] = s
                 _p[pos:pos + take] = p
                 _v[pos:pos + take] = v.astype(np.int64)
@@ -179,6 +192,10 @@ class ChessDataset(Dataset):
         self.total_positions = pos
 
         ram_gb = (self._states.nbytes + self._policies.nbytes + self._values.nbytes) / 1e9
+        if DRAW_MAX_POSITIONS > 0:
+            before = pos + thinned
+            print(f"Draw subsample (cap={DRAW_MAX_POSITIONS}): {before:,} → {pos:,} positions "
+                  f"(thinned {thinned:,} draw positions, {100*thinned/max(before,1):.0f}% of buffer)")
         print(f"Dataset Mapped: {self.total_positions:,} positions ({ram_gb:.1f} GB RAM).")
 
     def __len__(self):

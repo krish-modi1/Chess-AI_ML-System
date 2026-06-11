@@ -88,9 +88,10 @@ export DECIDED_PATIENCE=5
 export REDUCED_SIMULATIONS=100
 export GAMES_PER_WORKER=10
 export ITERATIONS=1000
-export EVAL_WORKERS=10
-export GAMES_PER_EVAL_WORKER=4
-export STOCKFISH_GAMES=50
+export EVAL_WORKERS=30           # arena: 30 workers × 5 games = 150 games (stabler promotion gate)
+export GAMES_PER_EVAL_WORKER=5
+export STOCKFISH_GAMES=100       # stockfish: 100 games for a tighter Elo estimate
+export STOCKFISH_WORKERS=25      # 25 CPU-Stockfish workers × 4 games each = 100
 export STOCKFISH_ELO=1800
 export MAX_MOVES_PER_GAME=800
 export EVAL_MAX_MOVES_PER_GAME=800
@@ -103,3 +104,4 @@ export TRAIN_EPOCHS=1          # was 4 — stop hammering tiny data
 export TRAIN_LR=1e-4           # was 3e-4 — gentler AdamW fine-tune
 export KL_ANCHOR_BETA=1.0      # KL(pretrained prior ‖ candidate) anti-forgetting penalty; 0 disables
 export MIN_TRAIN_ITERS=3       # self-play only until this many iterations of data exist, then train
+export DRAW_MAX_POSITIONS=150  # thin long draws to ≤150 positions (draws were ~46% of buffer → flattening the value head)

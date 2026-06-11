@@ -376,7 +376,7 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
             winner_turn = 1.0 if result == "1-0" else 0.0
             for g in game_data:
                 values.append(0 if g['turn'] == winner_turn else 2)
-        
+
         timestamp = int(time.time())
         filename = f"{iter_dir}/w{worker_id}_g{i}_{timestamp}.npz"
         
@@ -469,6 +469,9 @@ NOPROGRESS_PATIENCE   = int(os.environ.get("NOPROGRESS_PATIENCE", 30))
 EVAL_WORKERS = int(os.environ.get("EVAL_WORKERS", 10))
 GAMES_PER_EVAL_WORKER = int(os.environ.get("GAMES_PER_EVAL_WORKER", 4))
 STOCKFISH_GAMES = int(os.environ.get("STOCKFISH_GAMES", 20))
+# Stockfish workers run a full Stockfish engine each (CPU-heavy), so decouple from arena's
+# EVAL_WORKERS. Falls back to EVAL_WORKERS if unset.
+STOCKFISH_WORKERS = int(os.environ.get("STOCKFISH_WORKERS", EVAL_WORKERS))
 STOCKFISH_ELO = int(os.environ.get("STOCKFISH_ELO", 1320))
 # Skip Phase 3 (arena + Stockfish eval) entirely — for local self-play/train validation.
 SKIP_EVAL = os.environ.get("SKIP_EVAL", "0") == "1"
@@ -580,7 +583,7 @@ def run_stockfish_eval_gpu(model_path, num_games, stockfish_path, sims, sf_elo, 
         print(f"❌ Stockfish not found at {stockfish_path}")
         return None
 
-    n_workers = max(1, min(num_games, EVAL_WORKERS))
+    n_workers = max(1, min(num_games, STOCKFISH_WORKERS))
     per = [num_games // n_workers + (1 if i < num_games % n_workers else 0) for i in range(n_workers)]
 
     print(f"  Stockfish eval: model on GPU server + {n_workers} CPU-Stockfish workers ({num_games} games)")
