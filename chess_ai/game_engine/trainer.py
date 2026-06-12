@@ -61,9 +61,15 @@ def _build_h_flip_perm():
 
 _H_FLIP_PERM = _build_h_flip_perm()
 
-# Thin draw games to at most this many positions when loading the training buffer (load-time
-# only; the .npz on disk is untouched). Curbs draw-label over-representation. 0 = disabled.
-DRAW_MAX_POSITIONS = int(os.environ.get("DRAW_MAX_POSITIONS", 0))
+# Load-time position subsampling (the .npz on disk is untouched). Curbs value-overfitting from
+# correlated within-game positions (AlphaGo, Nature 2016). 0 = disabled.
+#   DRAW_MAX_POSITIONS     — stricter cap for DRAW games only (rebalances draw labels).
+#   MAX_POSITIONS_PER_GAME — cap for EVERY game (decorrelation); applied as min() with the draw cap.
+DRAW_MAX_POSITIONS     = int(os.environ.get("DRAW_MAX_POSITIONS", 0))
+MAX_POSITIONS_PER_GAME = int(os.environ.get("MAX_POSITIONS_PER_GAME", 0))
+# Weight on the value loss in the combined objective (AlphaZero uses a low-scale value term;
+# "Policy or Value?" CoG 2019 shows the equal p+v sum is suboptimal). 1.0 = current behavior.
+VALUE_LOSS_WEIGHT = float(os.environ.get("VALUE_LOSS_WEIGHT", 1.0))
 
 def scan_window_files(data_dir, window_size=20):
     """Scan the last `window_size` iteration folders and return [(path, n_positions)] for every
@@ -160,11 +166,14 @@ class ChessDataset(Dataset):
                 if not (np.isfinite(s).all() and np.isfinite(p).all()):
                     skipped += 1
                     continue
-                # Thin long DRAW games at load time so they don't over-represent draw labels in
-                # the buffer (~46% of positions were draw-labeled vs ~23% of games), which flattens
-                # the value head. The full .npz on disk is untouched. Decisive games kept whole.
-                if DRAW_MAX_POSITIONS > 0 and len(v) > DRAW_MAX_POSITIONS and (v == 1).all():
-                    keep = np.unique(np.linspace(0, len(v) - 1, DRAW_MAX_POSITIONS).astype(int))
+                # Decorrelate value targets at load time: cap positions/game so a long game's
+                # many correlated positions don't over-weight one outcome (AlphaGo, Nature 2016).
+                # The full .npz on disk is untouched.
+                cap = MAX_POSITIONS_PER_GAME
+                if (v == 1).all() and DRAW_MAX_POSITIONS > 0:
+                    cap = DRAW_MAX_POSITIONS if cap == 0 else min(cap, DRAW_MAX_POSITIONS)
+                if cap > 0 and len(v) > cap:
+                    keep = np.unique(np.linspace(0, len(v) - 1, cap).astype(int))
                     thinned += len(v) - len(keep)
                     s, p, v = s[keep], p[keep], v[keep]
                     take = len(v)
@@ -192,10 +201,11 @@ class ChessDataset(Dataset):
         self.total_positions = pos
 
         ram_gb = (self._states.nbytes + self._policies.nbytes + self._values.nbytes) / 1e9
-        if DRAW_MAX_POSITIONS > 0:
+        if DRAW_MAX_POSITIONS > 0 or MAX_POSITIONS_PER_GAME > 0:
             before = pos + thinned
-            print(f"Draw subsample (cap={DRAW_MAX_POSITIONS}): {before:,} → {pos:,} positions "
-                  f"(thinned {thinned:,} draw positions, {100*thinned/max(before,1):.0f}% of buffer)")
+            print(f"Subsample (draw_cap={DRAW_MAX_POSITIONS} game_cap={MAX_POSITIONS_PER_GAME}): "
+                  f"{before:,} → {pos:,} positions "
+                  f"(thinned {thinned:,}, {100*thinned/max(before,1):.0f}% of buffer)")
         print(f"Dataset Mapped: {self.total_positions:,} positions ({ram_gb:.1f} GB RAM).")
 
     def __len__(self):
@@ -373,7 +383,8 @@ def train_model(data_path="data/self_play",
     sep = '─' * 86
     print(f"\n{'═'*86}")
     print(f"  RL Training  |  {epochs} epochs  |  batch={batch_size}"
-          f"  |  {n_train_pos} train / {n_val_pos} val positions")
+          f"  |  {n_train_pos} train / {n_val_pos} val positions"
+          f"  |  value_weight={VALUE_LOSS_WEIGHT}")
     print(f"  {batches_per_epoch} train batches/ep  |  {n_val_batches} val batches/ep"
           f"  |  {num_dl_workers} workers ×{dl_prefetch} prefetch  |  {len(train_chunks)} chunk(s)")
     print(f"{'═'*86}")
@@ -442,7 +453,7 @@ def train_model(data_path="data/self_play",
             # and nan_to_num handles any remaining NaN in log_probs or sparse targets.
             log_probs = torch.log_softmax(pred_policies.float(), dim=1).clamp(min=-100.0)
             p_loss = -(target_policies.nan_to_num(0.0) * log_probs).sum(dim=1).mean()
-            loss   = v_loss + p_loss
+            loss   = p_loss + VALUE_LOSS_WEIGHT * v_loss
 
             if anchor_logp is not None:
                 # KL(anchor ‖ candidate): hold the policy near the pretrained prior.

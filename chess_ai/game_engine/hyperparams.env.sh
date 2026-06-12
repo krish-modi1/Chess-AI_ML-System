@@ -104,4 +104,8 @@ export TRAIN_EPOCHS=1          # was 4 — stop hammering tiny data
 export TRAIN_LR=1e-4           # was 3e-4 — gentler AdamW fine-tune
 export KL_ANCHOR_BETA=1.0      # KL(pretrained prior ‖ candidate) anti-forgetting penalty; 0 disables
 export MIN_TRAIN_ITERS=3       # self-play only until this many iterations of data exist, then train
-export DRAW_MAX_POSITIONS=150  # thin long draws to ≤150 positions (draws were ~46% of buffer → flattening the value head)
+export DRAW_MAX_POSITIONS=0        # subsumed by MAX_POSITIONS_PER_GAME below
+export MAX_POSITIONS_PER_GAME=20   # cap EVERY game to 20 positions (value-target decorrelation, AlphaGo Nature'16).
+                                   # Offline A/B sweet spot: value head 1.5× sharper + best calibration (56%), policy intact;
+                                   # caps ≤5 over-confident (shared trunk ≠ AlphaGo's separate value net).
+export VALUE_LOSS_WEIGHT=1.0       # no-op: A/B showed value-loss weight has zero effect (flattening is trunk/BN-driven)
