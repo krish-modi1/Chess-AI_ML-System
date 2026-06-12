@@ -34,5 +34,14 @@
     "arena_win_rate": 0.4689655172413793,
     "model_elo": null,
     "stockfish_elo": 1800
+  },
+  {
+    "iteration": 6,
+    "timestamp": "2026-06-12T11:52:05.190109",
+    "policy_loss": 3.72946714907185,
+    "value_loss": 0.893941407472315,
+    "arena_win_rate": 0.48333333333333334,
+    "model_elo": null,
+    "stockfish_elo": 1800
   }
 ]
