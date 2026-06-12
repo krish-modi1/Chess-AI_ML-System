@@ -77,8 +77,9 @@ export TRAIN_DL_WORKERS=16
 export TRAIN_DL_PREFETCH=4   # batches buffered per worker (local launchers set 1)
 
 # Loop / eval / rules — identical on all platforms.
-export SIMULATIONS=800
-export EVAL_SIMULATIONS=800
+export SIMULATIONS=1200        # was 800 — deeper search = stronger MCTS targets (policy-improvement
+                              # operator) to break the ~1524 plateau. ~1.5× slower self-play.
+export EVAL_SIMULATIONS=800   # kept at 800 so arena/Stockfish-Elo stay comparable to the 1524 anchor
 
 # KataGo-style decided-game playout: once |P(win)-P(loss)| >= threshold for N consecutive
 # moves, cap sims for the rest of the game (played to completion, no resignation → honest
@@ -100,7 +101,8 @@ export EVAL_MAX_MOVES_PER_GAME=800
 # is weak off the human distribution (gives MCTS-chosen moves ~0.7% median mass), so targets
 # demand large shifts; 4 epochs × 3e-4 over a tiny early window overwrote the net (1800→~1300).
 # See local/plans/anti-forgetting-levers.md.
-export TRAIN_EPOCHS=1          # was 4 — stop hammering tiny data
+export TRAIN_EPOCHS=2          # 1→2: extract more from the decorrelated buffer (safe now that cap=20
+                              # prevents the overfitting that 4 epochs caused at iter-1)
 export TRAIN_LR=1e-4           # was 3e-4 — gentler AdamW fine-tune
 export KL_ANCHOR_BETA=1.0      # KL(pretrained prior ‖ candidate) anti-forgetting penalty; 0 disables
 export MIN_TRAIN_ITERS=3       # self-play only until this many iterations of data exist, then train
