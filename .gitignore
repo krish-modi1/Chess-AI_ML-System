@@ -292,3 +292,8 @@ chess_ai/game_engine/mcts_engine_cpp*.so
 local/
 # Phase-resume checkpoint (ephemeral, regenerated each run)
 run_state.json
+
+# Training stdout logs — grow ~100k lines/iter and blow past GitHub's 100MB file limit.
+# Not backup-critical (the npz games are the real backup); pull/scp on demand for analysis.
+chess_ai/training_log.txt
+chess_ai/game_engine/training_log.txt
