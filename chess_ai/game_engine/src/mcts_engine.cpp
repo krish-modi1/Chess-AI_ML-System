@@ -2,22 +2,58 @@
 #include <cmath>
 #include <algorithm>
 #include <numeric>
+#include <cstdlib>
 
-// === select_child() — unchanged ===
+// Search-upgrade knobs, read ONCE from the environment. Defaults reproduce the current/AlphaZero
+// behavior, so a rebuilt .so is a no-op until these are set in hyperparams.env.sh.
+// See local/plans/upgrades-1-6.md.
+static float env_float(const char* name, float def) {
+    const char* v = std::getenv(name);
+    return v ? (float)std::atof(v) : def;
+}
+static const float FPU_REDUCTION    = env_float("FPU_REDUCTION", 0.0f);     // 0 = off (unvisited Q=0)
+static const float CPUCT_FACTOR     = env_float("CPUCT_FACTOR", 1.0f);      // 1 = current log term
+static const float FORCED_PLAYOUT_K = env_float("FORCED_PLAYOUT_K", 0.0f);  // 0 = off (KataGo k=2)
+
+// === select_child() — FPU + cpuct factor + forced playouts (all env-gated) ===
 std::pair<std::string, std::shared_ptr<MCTSNode>> MCTSNode::select_child() {
     float best_score = -1e9f;
     std::string best_action;
     std::shared_ptr<MCTSNode> best_child;
 
     float parent_visits = visit_count + virtual_loss;
-    float cpuct = CPUCT_INIT + std::log((parent_visits + CPUCT_BASE) / CPUCT_BASE);
+    float cpuct = CPUCT_INIT + CPUCT_FACTOR * std::log((parent_visits + CPUCT_BASE) / CPUCT_BASE);
     float sqrt_parent_visits = std::sqrt(std::max(1.0f, parent_visits));
+
+    // FPU: score truly-unvisited children at (parent value − reduction·√explored-policy-mass)
+    // instead of a flat 0. Disabled at the root so Dirichlet-noised root moves all get explored.
+    const bool is_root = parent.expired();
+    const bool fpu_on  = (FPU_REDUCTION > 0.0f) && !is_root;
+    float parent_value = 0.0f, explored_prior_sum = 0.0f;
+    if (fpu_on) {
+        parent_value = this->value();
+        for (auto& [a, c] : children)
+            if (c->visit_count > 0) explored_prior_sum += c->prior;
+    }
+    // Forced playouts (root only): force each visited child to ≥ n_forced = √(k·P·ΣN) visits.
+    const bool forced_on = (FORCED_PLAYOUT_K > 0.0f) && is_root;
+    const float total_root_visits = (float)visit_count;
 
     for (auto& [action, child] : children) {
         float child_visits = child->visit_count + child->virtual_loss;
-        float q_value = -child->value();
+        float q_value;
+        if (fpu_on && child->visit_count == 0 && child->virtual_loss == 0.0f) {
+            q_value = parent_value - FPU_REDUCTION * std::sqrt(explored_prior_sum);
+        } else {
+            q_value = -child->value();
+        }
         float u_value = cpuct * child->prior * sqrt_parent_visits / (1.0f + child_visits);
         float score = q_value + u_value;
+
+        if (forced_on && child->visit_count > 0) {
+            float n_forced = std::sqrt(FORCED_PLAYOUT_K * child->prior * total_root_visits);
+            if ((float)child->visit_count < n_forced) score = 1e9f;   // force-select until met
+        }
 
         // `!best_child` forces the first child to always be selected, so this never returns a
         // null child even when every score is NaN. A non-finite NN prior/value makes `score`
@@ -132,20 +168,43 @@ void MCTSEngine::add_dirichlet_noise(std::shared_ptr<MCTSNode>& root) {
 // === get_policy_vector() ===
 py::array_t<float> MCTSEngine::get_policy_vector(const std::shared_ptr<MCTSNode>& root, float temperature) {
     std::vector<float> policy(4672, 0.0f);
-    std::unordered_map<int, float> visits;
 
+    std::vector<int> indices;
+    std::vector<float> counts;
+    std::vector<float> priors;
+    float total_visits = 0.0f;
     for (const auto& [action_uci, child] : root->children) {
         int idx = move_to_index(action_uci);
-        if (idx < 4672) visits[idx] = (float)child->visit_count;
+        if (idx < 4672) {
+            indices.push_back(idx);
+            counts.push_back((float)child->visit_count);
+            priors.push_back(child->prior);
+            total_visits += (float)child->visit_count;
+        }
     }
 
-    if (visits.empty()) return py::array_t<float>(4672, policy.data());
+    if (indices.empty()) return py::array_t<float>(4672, policy.data());
 
-    std::vector<float> counts;
-    std::vector<int> indices;
-    for (const auto& [idx, v] : visits) {
-        indices.push_back(idx);
-        counts.push_back(v);
+    // ── Policy-target pruning (KataGo §3.2): strip forced-playout / noise visits from the TARGET.
+    //    Tree visit counts are untouched (best_action / played move unaffected) — only the stored
+    //    policy target is sharpened. Only runs when forced playouts are on. ──
+    if (FORCED_PLAYOUT_K > 0.0f && total_visits > 1.0f) {
+        size_t star = 0;
+        for (size_t i = 1; i < counts.size(); i++) if (counts[i] > counts[star]) star = i;
+        float cpuct = CPUCT_INIT + CPUCT_FACTOR * std::log((total_visits + CPUCT_BASE) / CPUCT_BASE);
+        float sqrtN = std::sqrt(std::max(1.0f, total_visits));
+        auto upuct = [&](float prior, float v) { return cpuct * prior * sqrtN / (1.0f + v); };
+        float puct_star = upuct(priors[star], counts[star]);
+        for (size_t i = 0; i < counts.size(); i++) {
+            if (i == star) continue;
+            float n_forced = std::sqrt(FORCED_PLAYOUT_K * priors[i] * total_visits);
+            float removed = 0.0f;
+            while (counts[i] > 1.0f && removed < n_forced &&
+                   upuct(priors[i], counts[i] - 1.0f) < puct_star) {
+                counts[i] -= 1.0f; removed += 1.0f;
+            }
+            if (removed > 0.0f && counts[i] <= 1.0f) counts[i] = 0.0f;   // prune outright
+        }
     }
 
     // Greedy (temperature → 0): one-hot on the most-visited move(s), split among ties.

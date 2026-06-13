@@ -273,10 +273,20 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                 else:
                     current_temp = 0.0
 
+                # Playout-cap randomization: FULL search (recorded) with prob FULL_SEARCH_PROB,
+                # else FAST search (played but not recorded, Dirichlet off). Off → record every move.
+                if FULL_SEARCH_PROB > 0.0:
+                    is_full = (np.random.random() < FULL_SEARCH_PROB)
+                    base_sims = REDUCED_SIMULATIONS if reduced_mode else SIMULATIONS
+                    worker.mcts_engine.simulations = base_sims if is_full else FAST_SIMULATIONS
+                else:
+                    is_full = True
+
                 # Snapshot history for this search (excludes current board)
                 history_snapshot = list(position_history)
                 best_move, mcts_policy = worker.search(
-                    game, temperature=current_temp, history=history_snapshot
+                    game, temperature=current_temp, history=history_snapshot,
+                    use_dirichlet=is_full
                 )
 
                 # KataGo-style decided-game detection: if the position has been lopsided for
@@ -334,11 +344,12 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                 # Update history with the committed board for the next move's search
                 position_history.appendleft(game.board.copy())
 
-                game_data.append({
-                    "state": state_tensor,
-                    "policy": mcts_policy,
-                    "turn": current_turn,
-                })
+                if is_full:   # playout-cap: only full-search positions enter the training data
+                    game_data.append({
+                        "state": state_tensor,
+                        "policy": mcts_policy,
+                        "turn": current_turn,
+                    })
 
                 
                 dur = time.time() - move_start
@@ -467,6 +478,14 @@ EVAL_SIMULATIONS = int(os.environ.get("EVAL_SIMULATIONS", 1600))
 DECIDED_VALUE_THRESHOLD = float(os.environ.get("DECIDED_VALUE_THRESHOLD", 0.9))
 DECIDED_PATIENCE = int(os.environ.get("DECIDED_PATIENCE", 5))
 REDUCED_SIMULATIONS = int(os.environ.get("REDUCED_SIMULATIONS", 100))
+
+# --- Playout-cap randomization (KataGo §3.1; self-play only) ---
+# When FULL_SEARCH_PROB > 0: each move does a FULL search (normal sims, Dirichlet on) with this
+# probability and is RECORDED; otherwise a FAST search (FAST_SIMULATIONS, Dirichlet off) that is
+# PLAYED but NOT recorded. Decouples value-data volume from policy-target quality. 0 = off (record
+# every move = current behavior). See local/plans/upgrades-1-6.md.
+FULL_SEARCH_PROB = float(os.environ.get("FULL_SEARCH_PROB", 0.0))
+FAST_SIMULATIONS = int(os.environ.get("FAST_SIMULATIONS", 200))
 
 # --- No-progress (dead-draw) cut (self-play only) ---
 # The decided-game cut above only fires on WON positions (|value| high). Long DRAWN games have
@@ -896,6 +915,29 @@ def run_self_play_phase(iteration):
                     server_process.kill()
                     server_process.join()
 
+def _update_swa():
+    """SWA (KataGo): maintain swa_model.pth = decay·swa + (1−decay)·candidate across iterations.
+    Offline only (Option A) — NOT used by the pipeline; probe it vs candidate. Off by default
+    (SWA_ENABLE=1 to turn on). Note: benefit is uncertain in our discrete-iteration loop (each
+    candidate is an independent fine-tune of best_model, not a continuous trajectory)."""
+    if os.environ.get("SWA_ENABLE", "0") != "1" or not os.path.exists(CANDIDATE_MODEL):
+        return
+    decay = float(os.environ.get("SWA_DECAY", 0.75))
+    swa_path = f"{MODEL_DIR}/swa_model.pth"
+    cand = torch.load(CANDIDATE_MODEL, map_location="cpu", weights_only=False)
+    cand_sd = cand["model_state_dict"] if isinstance(cand, dict) and "model_state_dict" in cand else cand
+    if not os.path.exists(swa_path):
+        torch.save({"model_state_dict": cand_sd}, swa_path)
+        print("  [SWA] initialized swa_model.pth from candidate"); return
+    swa = torch.load(swa_path, map_location="cpu", weights_only=False)
+    swa_sd = swa["model_state_dict"] if isinstance(swa, dict) and "model_state_dict" in swa else swa
+    for k in swa_sd:
+        if k in cand_sd and torch.is_floating_point(swa_sd[k]):
+            swa_sd[k].mul_(decay).add_(cand_sd[k].float(), alpha=1.0 - decay)
+    torch.save({"model_state_dict": swa_sd}, swa_path)
+    print(f"  [SWA] updated swa_model.pth (decay={decay})")
+
+
 def run_training_phase(iteration):
     print(f"\n=== ITERATION {iteration}: TRAINING PHASE ===")
     cleanup_memory()  # Clear VRAM before training
@@ -932,7 +974,8 @@ def run_training_phase(iteration):
                 lr=TRAIN_LR,
                 window_size=TRAIN_WINDOW,
                 total_iterations=ITERATIONS)
-    
+
+    _update_swa()
     return p_loss, v_loss
 
 def run_evaluation_phase(iteration, logger, p_loss, v_loss):

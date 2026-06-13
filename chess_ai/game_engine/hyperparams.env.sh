@@ -122,3 +122,16 @@ export VALUE_LOSS_WEIGHT=1.0       # no-op: A/B showed value-loss weight has zer
 export AUX_W_MAT=0.5
 export AUX_W_PLIES=0.5
 export AUX_W_REPLY=0.03
+
+# ── Search/training upgrades (master-table easy wins) — see local/plans/upgrades-1-6.md ──
+# ENABLED at the recommended values (Lc0/KataGo) from iter-10 onward. Each is env-isolated, so if
+# iter-10 regresses, disable individually to find the culprit (forced playouts is the most novel —
+# watch it first). The C++ ones (FPU/cpuct/forced) take effect on the .so rebuild run_gcp.sh does.
+export FPU_REDUCTION=0.5        # 1) First-Play-Urgency: unvisited child Q = parent_Q − 0.5·√(explored P), 0 at root
+export CPUCT_FACTOR=2.0         # 3) cpuct = CPUCT_INIT + 2.0·log((N+base)/base)  (Lc0 self-play)
+export FORCED_PLAYOUT_K=2.0     # 4) forced playouts + policy-target pruning, n_forced=√(2·P·ΣN)  (KataGo k=2)
+export FULL_SEARCH_PROB=0.25    # 2) playout-cap: 25% of moves full+recorded, rest fast+unrecorded (Dirichlet off)
+export FAST_SIMULATIONS=200     #    fast-search sim count
+export SWA_ENABLE=1             # 5) stochastic weight averaging → offline swa_model.pth (probe vs candidate)
+export SWA_DECAY=0.75
+# 6) aux weights above (AUX_W_*) — tune from the epoch-1 "aux (raw, pre-weight)" log, not a fixed change.
