@@ -653,7 +653,8 @@ def run_stockfish_eval_gpu(model_path, num_games, stockfish_path, sims, sf_elo, 
 
 
 def run_arena_server_worker(worker_id, n_games, cand_in_q, cand_out_q, champ_in_q, champ_out_q,
-                            sims, worker_batch, max_moves, result_q, cand_shm, champ_shm):
+                            sims, worker_batch, max_moves, result_q, cand_shm, champ_shm,
+                            tally=None, total_games=0):
     """Play n_games of Candidate-vs-Champion. Each model's MCTS inference is routed to its OWN
     shared GPU InferenceServer (candidate server + champion server), so the GPU holds exactly 2
     model copies regardless of worker count — vs the old inline path that loaded 2 models ×
@@ -699,18 +700,32 @@ def run_arena_server_worker(worker_id, n_games, cand_in_q, cand_out_q, champ_in_
             except Exception as e:
                 print(f"[Arena Worker {worker_id}] game {game_id} error: {e}")
                 continue
+            # Candidate-perspective outcome: 0=win 1=draw 2=loss 3=forced-draw
             if not game.is_over and len(game.moves) >= max_moves:
-                fd += 1
-                print(f"Arena Game {game_id}: * ({cand_label} vs {champ_label}) | Moves: {len(game.moves)} (FORCED DRAW)")
-                continue
-            result = game.result
-            if result == "1-0":
-                w += 1 if cand_is_white else 0; l += 0 if cand_is_white else 1
-            elif result == "0-1":
-                l += 1 if cand_is_white else 0; w += 0 if cand_is_white else 1
+                fd += 1; cat = 3; disp = "*"; tag = " (FORCED DRAW)"
             else:
-                d += 1
-            print(f"Arena Game {game_id}: {result} ({cand_label} vs {champ_label}) | Moves: {len(game.moves)}")
+                disp = game.result; tag = ""
+                if disp == "1-0":
+                    cat = 0 if cand_is_white else 2
+                elif disp == "0-1":
+                    cat = 2 if cand_is_white else 0
+                else:
+                    cat = 1
+                if   cat == 0: w += 1
+                elif cat == 2: l += 1
+                else:          d += 1
+            # Running GLOBAL tally across all arena workers (shared mp.Array) + WR using the same
+            # formula as the promotion gate: (W + 0.5D + 0.5FD) / total, ≥0.55 promotes.
+            line = f"Arena Game {game_id}: {disp} ({cand_label} vs {champ_label}) | Moves: {len(game.moves)}{tag}"
+            if tally is not None:
+                with tally.get_lock():
+                    tally[cat] += 1
+                    tw, td, tl, tfd = tally[0], tally[1], tally[2], tally[3]
+                tot = tw + td + tl + tfd
+                wr = (tw + 0.5 * td + 0.5 * tfd) / tot if tot else 0.0
+                line += (f"  ||  W-D-L-FD {tw}-{td}-{tl}-{tfd}  WR {100*wr:4.1f}%"
+                         f"  ({tot}/{total_games})")
+            print(line)
     except Exception as e:
         print(f"[Arena Worker {worker_id}] ❌ CRASHED: {e}")
         import traceback; traceback.print_exc()
@@ -731,12 +746,13 @@ def run_arena_eval_gpu(cand_model, champ_model, num_games, sims, max_moves):
         champ_model, n_workers, WORKER_BATCH_SIZE, CUDA_BATCH_SIZE, CUDA_STREAMS, CUDA_TIMEOUT_INFERENCE)
 
     result_q = mp.Queue()
+    tally = mp.Array('i', 4)   # shared running [wins, draws, losses, forced_draws] across workers
     workers = []
     for i in range(n_workers):
         p = mp.Process(target=run_arena_server_worker,
                        args=(i, per[i], cand_server.input_queue, cand_wq[i],
                              champ_server.input_queue, champ_wq[i], sims, WORKER_BATCH_SIZE,
-                             max_moves, result_q, cand_shm, champ_shm))
+                             max_moves, result_q, cand_shm, champ_shm, tally, num_games))
         p.start(); workers.append(p)
 
     totals = {"wins": 0, "draws": 0, "losses": 0, "forced_draws": 0}
