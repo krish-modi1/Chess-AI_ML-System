@@ -81,8 +81,29 @@ class ChessCNN(nn.Module):
             nn.Linear(256, 3)
         )
 
-    def forward(self, x):
+        # Auxiliary heads (training-only; ignored at play time). They feed the shared trunk dense,
+        # forward-looking signal to sharpen the value head — see local/plans/auxiliary-targets.md.
+        self.material_head = nn.Sequential(   # → final material margin (tanh, [-1,1])
+            nn.Conv2d(filters, 1, 1, bias=False),
+            nn.BatchNorm2d(1), Mish(), nn.Flatten(), nn.Linear(64, 1)
+        )
+        self.plies_head = nn.Sequential(      # → plies remaining (sigmoid, [0,1])
+            nn.Conv2d(filters, 1, 1, bias=False),
+            nn.BatchNorm2d(1), Mish(), nn.Flatten(), nn.Linear(64, 1)
+        )
+        self.reply_head = nn.Sequential(      # → opponent's reply move (logits over 4672)
+            nn.Conv2d(filters, 32, 1, bias=False),
+            nn.BatchNorm2d(32), Mish(), nn.Flatten(), nn.Linear(32*8*8, 4672)
+        )
+
+    def forward(self, x, with_aux=False):
         x = self.input_conv(x)
-        for block in self.res_blocks: 
+        for block in self.res_blocks:
             x = block(x)
-        return self.policy_head(x), self.value_head(x)
+        policy, value = self.policy_head(x), self.value_head(x)
+        if not with_aux:
+            return policy, value          # inference path — unchanged 2-tuple
+        material = torch.tanh(self.material_head(x)).squeeze(-1)   # (B,)
+        plies    = torch.sigmoid(self.plies_head(x)).squeeze(-1)   # (B,)
+        reply    = self.reply_head(x)                              # (B, 4672)
+        return policy, value, material, plies, reply

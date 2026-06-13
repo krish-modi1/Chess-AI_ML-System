@@ -35,7 +35,7 @@ def load_model(path):
     sd = raw["model_state_dict"] if isinstance(raw, dict) and "model_state_dict" in raw else raw
     sd = {k.removeprefix("_orig_mod."): v for k, v in sd.items()}
     model = ChessCNN().eval()
-    model.load_state_dict(sd)
+    model.load_state_dict(sd, strict=False)   # tolerate pre-aux checkpoints
     return model
 
 

@@ -111,3 +111,14 @@ export MAX_POSITIONS_PER_GAME=20   # cap EVERY game to 20 positions (value-targe
                                    # Offline A/B sweet spot: value head 1.5× sharper + best calibration (56%), policy intact;
                                    # caps ≤5 over-confident (shared trunk ≠ AlphaGo's separate value net).
 export VALUE_LOSS_WEIGHT=1.0       # no-op: A/B showed value-loss weight has zero effect (flattening is trunk/BN-driven)
+
+# Auxiliary-head trunk regularizers (KataGo-style) to sharpen the signal-starved value head.
+# Forward-looking targets baked into the .npz: material=final material margin (MSE), plies=plies-
+# to-end (MSE), reply=opponent's next move (CE over 4672). Weights are scale-balanced: reply CE
+# (~3-5 on a trained net) is far larger than the MSE losses (~0.1-0.3), so reply gets a small
+# weight and the MSE heads larger ones — each contributes a comparable, modest amount vs p_loss
+# (~1.3) / v_loss (~0.85). CONFIRM/tune from iter-8's epoch-1 "aux (raw, pre-weight)" log line.
+# 0 = off. See local/plans/auxiliary-targets.md.
+export AUX_W_MAT=0.5
+export AUX_W_PLIES=0.5
+export AUX_W_REPLY=0.03

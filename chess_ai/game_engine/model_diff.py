@@ -19,7 +19,7 @@ def load(p):
     raw = torch.load(p, map_location="cpu", weights_only=False)
     sd = raw["model_state_dict"] if isinstance(raw, dict) and "model_state_dict" in raw else raw
     sd = {k.removeprefix("_orig_mod."): v for k, v in sd.items()}
-    m = ChessCNN().eval(); m.load_state_dict(sd); return m
+    m = ChessCNN().eval(); m.load_state_dict(sd, strict=False); return m  # tolerate pre-aux ckpts
 
 
 def main():

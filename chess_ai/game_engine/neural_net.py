@@ -123,7 +123,9 @@ class InferenceServer:
         state = checkpoint.get('model_state_dict', checkpoint.get('state_dict', checkpoint))
         if any(k.startswith('_orig_mod.') for k in state):
             state = {k.removeprefix('_orig_mod.'): v for k, v in state.items()}
-        model.load_state_dict(state)
+        # strict=False: a pre-aux champion checkpoint lacks the aux-head keys; inference only
+        # reads policy+value, so random-init aux heads are harmless. (See auxiliary-targets plan.)
+        model.load_state_dict(state, strict=False)
         model.eval()
         
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.num_streams)

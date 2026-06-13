@@ -51,6 +51,7 @@ from game_engine.chess_env import ChessGame
 from game_engine.trainer import train_model
 from game_engine.evaluation import MetricsLogger
 from game_engine.cnn import ChessCNN
+from game_engine.aux_labels import derive_aux_labels
 
 # ==========================================
 class GracefulKiller:
@@ -380,10 +381,19 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
         timestamp = int(time.time())
         filename = f"{iter_dir}/w{worker_id}_g{i}_{timestamp}.npz"
         
+        states_arr   = np.array([g["state"] for g in game_data])
+        policies_arr = np.array([g["policy"] for g in game_data])
+        values_arr   = np.array(values, dtype=np.int8)
+        # Bake auxiliary trunk-regularizer labels so the trainer reads them directly (matches
+        # migrate_aux.py for old games). See local/plans/auxiliary-targets.md.
+        material, plies_left, reply = derive_aux_labels(states_arr, policies_arr, values_arr)
         np.savez_compressed(filename,
-                          states=np.array([g["state"] for g in game_data]),
-                          policies=np.array([g["policy"] for g in game_data]),
-                          values=np.array(values, dtype=np.int8))
+                          states=states_arr,
+                          policies=policies_arr,
+                          values=values_arr,
+                          material=material,
+                          plies_left=plies_left,
+                          reply=reply)
 
         print(f" [Worker {worker_id}] Finished Game {i+1} in {time.time()-game_start:.1f}s | Total Moves {len(game.moves)} | Result {result}")
 

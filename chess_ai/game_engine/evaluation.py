@@ -39,7 +39,7 @@ class EvalMCTS:
                 state = checkpoint.get('model_state_dict', checkpoint.get('state_dict', checkpoint))
                 if any(k.startswith('_orig_mod.') for k in state):
                     state = {k.removeprefix('_orig_mod.'): v for k, v in state.items()}
-                self.model.load_state_dict(state)
+                self.model.load_state_dict(state, strict=False)  # tolerate pre-aux checkpoints
                 print(f"[Eval] Loaded model from {model_path}")
             except Exception as e:
                 print(f"[Eval] ❌ Failed to load checkpoint: {e}")

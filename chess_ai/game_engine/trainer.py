@@ -71,6 +71,15 @@ MAX_POSITIONS_PER_GAME = int(os.environ.get("MAX_POSITIONS_PER_GAME", 0))
 # "Policy or Value?" CoG 2019 shows the equal p+v sum is suboptimal). 1.0 = current behavior.
 VALUE_LOSS_WEIGHT = float(os.environ.get("VALUE_LOSS_WEIGHT", 1.0))
 
+# Auxiliary-head loss weights (training-only trunk regularizers; see
+# local/plans/auxiliary-targets.md). Default 0.0 = OFF (exact legacy behavior); hyperparams.env.sh
+# sets them on. Labels are read from the .npz if baked, else derived on the fly.
+from aux_labels import derive_aux_labels
+AUX_W_MAT   = float(os.environ.get("AUX_W_MAT", 0.0))    # final material margin   (MSE)
+AUX_W_PLIES = float(os.environ.get("AUX_W_PLIES", 0.0))  # plies remaining         (MSE)
+AUX_W_REPLY = float(os.environ.get("AUX_W_REPLY", 0.0))  # opponent reply move     (masked CE)
+AUX_ON = (AUX_W_MAT > 0 or AUX_W_PLIES > 0 or AUX_W_REPLY > 0)
+
 def scan_window_files(data_dir, window_size=20):
     """Scan the last `window_size` iteration folders and return [(path, n_positions)] for every
     valid .npz, NEWEST-iteration-first (so a downstream cap/chunk keeps the most recent data).
@@ -147,6 +156,10 @@ class ChessDataset(Dataset):
         _p = np.empty((total, 4672),       dtype=np.float16)
         _v = np.empty(total,               dtype=np.int64)
         _g = np.empty(total,               dtype=np.int32)   # per-position game id (= file)
+        # Auxiliary-target arrays (tiny vs _s); only filled when AUX_ON.
+        _mat = np.zeros(total, dtype=np.float32) if AUX_ON else None
+        _pl  = np.zeros(total, dtype=np.float32) if AUX_ON else None
+        _rp  = np.full(total, -1, dtype=np.int64) if AUX_ON else None
 
         # Pass 2: fill pre-allocated arrays
         print(f"Loading {total:,} positions into RAM...")
@@ -160,12 +173,17 @@ class ChessDataset(Dataset):
                     s = d['states'][:take]
                     p = d['policies'][:take]
                     v = d['values'][:take]
+                    has_aux = AUX_ON and all(k in d for k in ('material', 'plies_left', 'reply'))
+                    if has_aux:                       # baked labels, aligned to s/p/v
+                        a_mat = d['material'][:take]; a_pl = d['plies_left'][:take]; a_rp = d['reply'][:take]
                 # Loud guard: a temperature=0 overflow once silently filled policy
                 # targets with NaN, and the trainer's nan_to_num masked it. Fail fast
                 # and visibly here instead of training on corrupt targets again.
                 if not (np.isfinite(s).all() and np.isfinite(p).all()):
                     skipped += 1
                     continue
+                if AUX_ON and not has_aux:             # un-migrated file → derive on the fly
+                    a_mat, a_pl, a_rp = derive_aux_labels(s, p, v)
                 # Decorrelate value targets at load time: cap positions/game so a long game's
                 # many correlated positions don't over-weight one outcome (AlphaGo, Nature 2016).
                 # The full .npz on disk is untouched.
@@ -176,11 +194,17 @@ class ChessDataset(Dataset):
                     keep = np.unique(np.linspace(0, len(v) - 1, cap).astype(int))
                     thinned += len(v) - len(keep)
                     s, p, v = s[keep], p[keep], v[keep]
+                    if AUX_ON:
+                        a_mat, a_pl, a_rp = a_mat[keep], a_pl[keep], a_rp[keep]
                     take = len(v)
                 _s[pos:pos + take] = s
                 _p[pos:pos + take] = p
                 _v[pos:pos + take] = v.astype(np.int64)
                 _g[pos:pos + take] = game_id   # all positions in one file = one game
+                if AUX_ON:
+                    _mat[pos:pos + take] = a_mat
+                    _pl[pos:pos + take]  = a_pl
+                    _rp[pos:pos + take]  = a_rp
                 pos += take
                 game_id += 1
             except Exception as e:
@@ -197,6 +221,10 @@ class ChessDataset(Dataset):
         self._policies = torch.from_numpy(_p)
         self._values   = torch.from_numpy(_v)
         self._game_ids = _g            # numpy int32, one per position
+        if AUX_ON:
+            self._material = torch.from_numpy(_mat[:pos])
+            self._plies    = torch.from_numpy(_pl[:pos])
+            self._reply    = torch.from_numpy(_rp[:pos])
         self.num_games = game_id
         self.total_positions = pos
 
@@ -215,6 +243,10 @@ class ChessDataset(Dataset):
         state  = self._states[idx]
         policy = self._policies[idx]
         value  = self._values[idx]
+        if AUX_ON:
+            material = self._material[idx]
+            plies    = self._plies[idx]
+            reply    = int(self._reply[idx])
 
         if torch.rand(1).item() < 0.5:
             # Horizontal (file a<->h) mirror is a valid chess symmetry EXCEPT it swaps
@@ -226,12 +258,21 @@ class ChessDataset(Dataset):
             state  = torch.flip(state, dims=[2])
             state[[112, 113, 114, 115]] = state[[113, 112, 115, 114]]
             policy = policy[_H_FLIP_PERM]
+            # the reply move-index lives in the same 4672 action space → remap it too
+            # (material & plies are flip-invariant). -1 (masked) stays -1.
+            if AUX_ON and reply >= 0:
+                reply = int(_H_FLIP_PERM[reply])
 
-        return {
+        out = {
             'state':  state.float(),
             'policy': policy.float(),
             'value':  value,
         }
+        if AUX_ON:
+            out['material'] = material
+            out['plies']    = plies
+            out['reply']    = reply
+        return out
 
 def train_model(data_path="data/self_play",
                 input_model_path="game_engine/model/best_model.pth",
@@ -339,12 +380,14 @@ def train_model(data_path="data/self_play",
             # Strip torch.compile prefix (_orig_mod.) if present
             if any(k.startswith('_orig_mod.') for k in sd):
                 sd = {k.removeprefix('_orig_mod.'): v for k, v in sd.items()}
-            model.load_state_dict(sd)
+            # strict=False: a pre-aux checkpoint is missing the aux-head keys (kept at random
+            # init); inference never reads them. Belt-and-suspenders alongside upgrade_ckpt.py.
+            model.load_state_dict(sd, strict=False)
             # KL-anchor: a frozen copy of the pretrained base. Its policy is the prior the
             # candidate is penalized for drifting from (anti-forgetting on small early data).
             if KL_ANCHOR_BETA > 0:
                 anchor = ChessCNN().to(device)
-                anchor.load_state_dict(sd)
+                anchor.load_state_dict(sd, strict=False)
                 anchor.eval()
                 for p in anchor.parameters():
                     p.requires_grad_(False)
@@ -366,11 +409,17 @@ def train_model(data_path="data/self_play",
     scheduler = CosineAnnealingLR(optimizer, T_max=max(total_steps, 1), eta_min=1e-6)
 
     if checkpoint is not None:
-        if 'optimizer_state_dict' in checkpoint:
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        if 'scheduler_state_dict' in checkpoint:
-            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            print(f"Scheduler restored: step {scheduler.last_epoch}/{scheduler.T_max} | LR: {scheduler.get_last_lr()[0]:.2e}")
+        # An arch change (new aux heads) makes the saved optimizer state's param groups mismatch
+        # the new optimizer → load_state_dict throws. A fresh optimizer is correct across the
+        # arch boundary, so guard and continue rather than crash.
+        try:
+            if 'optimizer_state_dict' in checkpoint:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if 'scheduler_state_dict' in checkpoint:
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                print(f"Scheduler restored: step {scheduler.last_epoch}/{scheduler.T_max} | LR: {scheduler.get_last_lr()[0]:.2e}")
+        except (ValueError, KeyError, RuntimeError) as e:
+            print(f"  ⚠️ Fresh optimizer/scheduler (saved state incompatible — e.g. arch change): {e}")
     
     # 3. Loss Functions
     ce_value_loss = nn.CrossEntropyLoss()
@@ -424,6 +473,7 @@ def train_model(data_path="data/self_play",
         # ── Train pass ─────────────────────────────────────────────────────────
         model.train()
         tr_p = tr_v = tr_acc = g_norm = tr_kl = 0.0
+        tr_mat = tr_plies = tr_reply = 0.0
         n_tr = 0
 
         train_bar = tqdm(_train_batches(), total=batches_per_epoch,
@@ -445,7 +495,10 @@ def train_model(data_path="data/self_play",
                 del a_logits
 
             with torch.amp.autocast(device_type=device.type):
-                pred_policies, pred_values = model(states)
+                if AUX_ON:
+                    pred_policies, pred_values, pred_mat, pred_plies, pred_reply = model(states, with_aux=True)
+                else:
+                    pred_policies, pred_values = model(states)
                 v_loss = ce_value_loss(pred_values, target_values)
 
             # Policy loss in fp32: pred_policies may be fp16 inside autocast and
@@ -454,6 +507,19 @@ def train_model(data_path="data/self_play",
             log_probs = torch.log_softmax(pred_policies.float(), dim=1).clamp(min=-100.0)
             p_loss = -(target_policies.nan_to_num(0.0) * log_probs).sum(dim=1).mean()
             loss   = p_loss + VALUE_LOSS_WEIGHT * v_loss
+
+            if AUX_ON:
+                # Trunk regularizers (fp32). MSE for material/plies; masked CE for reply.
+                t_mat   = batch['material'].to(device, non_blocking=True).float()
+                t_plies = batch['plies'].to(device, non_blocking=True).float()
+                t_reply = batch['reply'].to(device, non_blocking=True)
+                mat_l   = F.mse_loss(pred_mat.float(),   t_mat)
+                plies_l = F.mse_loss(pred_plies.float(), t_plies)
+                rmask   = t_reply >= 0
+                reply_l = (F.cross_entropy(pred_reply.float()[rmask], t_reply[rmask])
+                           if rmask.any() else pred_reply.sum() * 0.0)
+                loss = loss + AUX_W_MAT * mat_l + AUX_W_PLIES * plies_l + AUX_W_REPLY * reply_l
+                tr_mat += float(mat_l.item()); tr_plies += float(plies_l.item()); tr_reply += float(reply_l.item())
 
             if anchor_logp is not None:
                 # KL(anchor ‖ candidate): hold the policy near the pretrained prior.
@@ -531,6 +597,10 @@ def train_model(data_path="data/self_play",
               f"  {tr_acc_pct:>6.1f}%  {va_acc_pct:>6.1f}%"
               f"  {gn_avg:>7.3f}  {lr:>10.2e}  {elapsed:>4}s{marker}"
               f"{'  KL='+format(kl_avg,'.3f') if anchor is not None else ''}")
+        if AUX_ON:
+            print(f"        aux (raw, pre-weight): material={tr_mat/max(n_tr,1):.4f}  "
+                  f"plies={tr_plies/max(n_tr,1):.4f}  reply={tr_reply/max(n_tr,1):.3f}  "
+                  f"(weights {AUX_W_MAT}/{AUX_W_PLIES}/{AUX_W_REPLY})")
         sys.stdout.flush()
 
         last_p_loss = tr_p_avg
