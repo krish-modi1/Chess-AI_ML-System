@@ -41,6 +41,17 @@ def _chess_game_to_cpp_board(chess_game):
     return cpp_board
 
 
+def _cpp_board_from_history(b):
+    """Build a ChessBoard for a history position by REPLAYING its move stack, so repetition
+    tracking (isRepetition() in to_tensor) is preserved. Constructing from FEN alone resets the
+    chess-library's repetition history → the history frames' repetition planes would be all-zero.
+    """
+    cb = mcts_engine_cpp.ChessBoard()
+    for mv in b.move_stack:
+        cb.push(mv.uci())
+    return cb
+
+
 class MCTSWorker:
     """
     MCTS Worker using C++ backend with callback-based batched inference.
@@ -140,6 +151,16 @@ class MCTSWorker:
                         f"[Worker {self.worker_id}] No inference response in {timeout_ms}ms"
                     )
 
+    def _flush_output_queue(self):
+        """Discard any stale result still in the queue (e.g. a late arrival from a previously
+        timed-out request). Called before issuing a new request so the single-outstanding-request
+        invariant can't desync the SHM slot ↔ response pairing after a timeout."""
+        try:
+            while True:
+                self.output_queue.get_nowait()
+        except Exception:
+            pass
+
     # ═══════════════════════════════════════════════════════════════════════════
     # INFERENCE CALLBACK - Called by C++ during MCTS search
     # ═══════════════════════════════════════════════════════════════════════════
@@ -167,6 +188,7 @@ class MCTSWorker:
         if self.shm:
             n = batch_size
             self._inp_view[:n] = torch.from_numpy(arr)          # write our slot
+            self._flush_output_queue()                          # drop any stale late result
             self.input_queue.put((self.worker_id, n))           # tiny signal, no tensor
             try:
                 self._get_inference_result()                    # block for (n,) sentinel
@@ -186,6 +208,7 @@ class MCTSWorker:
         # ── Legacy path ──────────────────────────────────────────────────────────
         batch_tensor = torch.from_numpy(arr)
 
+        self._flush_output_queue()
         self.input_queue.put((self.worker_id, batch_tensor))
 
         try:
@@ -235,16 +258,16 @@ class MCTSWorker:
         # Convert ChessGame → ChessBoard by replaying moves (preserves repetition tracking)
         cpp_root = _chess_game_to_cpp_board(root_state)
 
-        # Convert python-chess Board history → ChessBoard history (from FEN).
-        # Minor approximation: repetition planes in history frames will be 0.
-        # Acceptable — matches the existing root-history approximation.
-        self._cpp_history = [mcts_engine_cpp.ChessBoard(b.fen()) for b in (history or [])]
+        # Convert python-chess Board history → ChessBoard history by REPLAYING moves so the
+        # repetition planes in history frames are correct (FEN-only construction zeroed them).
+        self._cpp_history = [_cpp_board_from_history(b) for b in (history or [])]
 
         # Get root position evaluation from inference server (N=1, same slot mechanism).
         root_np = cpp_root.to_tensor(self._cpp_history)   # (120, 8, 8) float32
 
         if self.shm:
             self._inp_view[:1] = torch.from_numpy(root_np).unsqueeze(0)
+            self._flush_output_queue()
             self.input_queue.put((self.worker_id, 1))
             try:
                 self._get_inference_result()
@@ -258,6 +281,7 @@ class MCTSWorker:
             self.last_root_value = value_f
         else:
             root_tensor = torch.from_numpy(root_np).unsqueeze(0)
+            self._flush_output_queue()
             self.input_queue.put((self.worker_id, root_tensor))
 
             try:
@@ -303,11 +327,11 @@ class MCTSWorker:
     def search_direct(self, root_state, model, temperature=1.0, use_dirichlet=True, history=None):
         """
         Direct MCTS search with direct model access (no queue server).
-        Used by StockfishEvaluator / Arena during evaluation.
+        Used by the standalone dev/eval scripts (eval_elo.py, play_*.py, verify_heads.py).
         use_dirichlet: accepted for API compatibility; C++ engine handles Dirichlet internally.
         """
         cpp_root = _chess_game_to_cpp_board(root_state)
-        cpp_history = [mcts_engine_cpp.ChessBoard(b.fen()) for b in (history or [])]
+        cpp_history = [_cpp_board_from_history(b) for b in (history or [])]
 
         device = next(model.parameters()).device
 

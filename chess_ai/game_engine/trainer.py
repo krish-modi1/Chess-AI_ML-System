@@ -382,7 +382,12 @@ def train_model(data_path="data/self_play",
                 sd = {k.removeprefix('_orig_mod.'): v for k, v in sd.items()}
             # strict=False: a pre-aux checkpoint is missing the aux-head keys (kept at random
             # init); inference never reads them. Belt-and-suspenders alongside upgrade_ckpt.py.
-            model.load_state_dict(sd, strict=False)
+            _ld = model.load_state_dict(sd, strict=False)
+            _AUX = ("material_head", "plies_head", "reply_head")
+            _nonaux_missing = [k for k in _ld.missing_keys if not k.startswith(_AUX)]
+            if _nonaux_missing or _ld.unexpected_keys:
+                print(f"  ⚠️ load_state_dict mismatch — non-aux MISSING={_nonaux_missing} "
+                      f"UNEXPECTED={list(_ld.unexpected_keys)} (a near-random trunk would train silently)")
             # KL-anchor: a frozen copy of the pretrained base. Its policy is the prior the
             # candidate is penalized for drifting from (anti-forgetting on small early data).
             if KL_ANCHOR_BETA > 0:
@@ -425,7 +430,7 @@ def train_model(data_path="data/self_play",
     ce_value_loss = nn.CrossEntropyLoss()
     
     # --- AMP Scaler ---
-    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == 'cuda'))
+    scaler = torch.amp.GradScaler(device.type, enabled=(device.type == 'cuda'))
 
     # ── Header ─────────────────────────────────────────────────────────────────
     n_val_batches = len(val_dataloader) if val_dataloader is not None else 0
@@ -491,7 +496,7 @@ def train_model(data_path="data/self_play",
             if anchor is not None:
                 with torch.no_grad(), torch.amp.autocast(device_type=device.type):
                     a_logits, _ = anchor(states)
-                anchor_logp = torch.log_softmax(a_logits.float(), dim=1)
+                anchor_logp = torch.log_softmax(a_logits.float(), dim=1).clamp(min=-100.0)
                 del a_logits
 
             with torch.amp.autocast(device_type=device.type):

@@ -612,13 +612,17 @@ def run_stockfish_eval_gpu(model_path, num_games, stockfish_path, sims, sf_elo, 
         p.start(); workers.append(p)
 
     results = []
+    deadline = time.time() + 1800   # global cap so one slow game can't abort the whole collection
     for _ in range(num_games):
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
         try:
-            r = result_q.get(timeout=900)
+            r = result_q.get(timeout=min(900, remaining))
             if r is not None:
                 results.append(r)
         except Exception:
-            break
+            continue   # a single slow/missing game shouldn't drop all subsequent finished games
     for p in workers:
         p.join(timeout=10)
         if p.is_alive():
@@ -772,7 +776,16 @@ def run_arena_eval_gpu(cand_model, champ_model, num_games, sims, max_moves):
             p.terminate(); p.join(timeout=5)
     _stop_inference_server(cand_server, cand_sp)
     _stop_inference_server(champ_server, champ_sp)
-    return totals
+
+    # The result_q aggregate silently drops a whole worker's games if that worker times out or is
+    # terminated above — biasing the promotion gate. The shared mp.Array tally is incremented
+    # per-game and survives worker death, so it is the authoritative count for the gate.
+    tw, td, tl, tfd = int(tally[0]), int(tally[1]), int(tally[2]), int(tally[3])
+    tally_games = tw + td + tl + tfd
+    if tally_games != sum(totals.values()) or tally_games < num_games:
+        print(f"  ⚠️ Arena count: result_q aggregate={sum(totals.values())} vs shared tally="
+              f"{tally_games}/{num_games} games — using the shared tally for the gate.")
+    return {"wins": tw, "draws": td, "losses": tl, "forced_draws": tfd}
 
 # --- PHASES ---
 
@@ -995,7 +1008,7 @@ if __name__ == "__main__":
         torch.save(ChessCNN().state_dict(), BEST_MODEL)
 
     timeout_handler.start()
-    print("⏱️ Deadlock timeout: 30 hour per iteration")
+    print(f"⏱️ Deadlock timeout: {timeout_handler.timeout_seconds/3600:.0f}h per iteration")
 
     # RESUMPTION LOGIC
     start_iter, start_phase = load_resume_point()
