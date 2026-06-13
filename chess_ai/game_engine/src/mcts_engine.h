@@ -111,7 +111,7 @@ public:
         return (visits > 0) ? value_sum / visits : 0.0f;
     }
 
-    std::pair<std::string, std::shared_ptr<MCTSNode>> select_child();
+    std::pair<std::string, std::shared_ptr<MCTSNode>> select_child(bool self_play = true);
     void expand(const std::vector<std::string>& valid_moves,
                 const std::vector<float>& policy_logits);
     std::string best_action() const;

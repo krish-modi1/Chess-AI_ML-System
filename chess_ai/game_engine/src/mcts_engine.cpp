@@ -16,7 +16,7 @@ static const float CPUCT_FACTOR     = env_float("CPUCT_FACTOR", 1.0f);      // 1
 static const float FORCED_PLAYOUT_K = env_float("FORCED_PLAYOUT_K", 0.0f);  // 0 = off (KataGo k=2)
 
 // === select_child() — FPU + cpuct factor + forced playouts (all env-gated) ===
-std::pair<std::string, std::shared_ptr<MCTSNode>> MCTSNode::select_child() {
+std::pair<std::string, std::shared_ptr<MCTSNode>> MCTSNode::select_child(bool self_play) {
     float best_score = -1e9f;
     std::string best_action;
     std::shared_ptr<MCTSNode> best_child;
@@ -35,8 +35,9 @@ std::pair<std::string, std::shared_ptr<MCTSNode>> MCTSNode::select_child() {
         for (auto& [a, c] : children)
             if (c->visit_count > 0) explored_prior_sum += c->prior;
     }
-    // Forced playouts (root only): force each visited child to ≥ n_forced = √(k·P·ΣN) visits.
-    const bool forced_on = (FORCED_PLAYOUT_K > 0.0f) && is_root;
+    // Forced playouts (self-play + root only): force each visited child to ≥ n_forced visits.
+    // Gated on self_play so eval/arena plays pure PUCT (strongest move, no forced exploration).
+    const bool forced_on = (FORCED_PLAYOUT_K > 0.0f) && is_root && self_play;
     const float total_root_visits = (float)visit_count;
 
     for (auto& [action, child] : children) {
@@ -353,7 +354,7 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::search(
                     path.push_back(it->second);
                     node = it->second;
                 } else {
-                    auto [action, next_node] = node->select_child();
+                    auto [action, next_node] = node->select_child(use_dirichlet);
                     path.push_back(next_node);
                     node = next_node;
                 }
