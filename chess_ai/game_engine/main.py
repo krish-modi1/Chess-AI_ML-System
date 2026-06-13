@@ -429,7 +429,10 @@ def run_server_wrapper(server):
 
 # --- PATHS ---
 STOCKFISH_PATH = os.environ.get("STOCKFISH_PATH", "/usr/games/stockfish")
-LOG_FILE = "training_log.txt"
+# Absolute, anchored to chess_ai/ (parent of game_engine/) so the Logger always writes
+# chess_ai/training_log.txt regardless of a process's cwd — prevents a duplicate
+# training_log.txt being created under game_engine/.
+LOG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "training_log.txt")
 MODEL_DIR = "game_engine/model"
 DATA_DIR = "data/self_play"
 RUN_STATE_FILE = os.path.join(DATA_DIR, "run_state.json")

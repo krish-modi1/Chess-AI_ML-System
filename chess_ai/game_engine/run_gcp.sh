@@ -27,7 +27,8 @@ fi
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. Resolve script directory so this works from any working directory
 # ──────────────────────────────────────────────────────────────────────────────
-CHESS_AI_DIR="$(cd "$(dirname "$0")" && pwd)"
+CHESS_AI_DIR="$(cd "$(dirname "$0")" && pwd)"   # = chess_ai/game_engine (this script lives here)
+PARENT_DIR="$(dirname "$CHESS_AI_DIR")"          # = chess_ai/ — canonical home of training_log.txt
 cd "$CHESS_AI_DIR"
 mkdir -p logs
 
@@ -227,7 +228,7 @@ echo "  SIMULATIONS      : $SIMULATIONS"
 echo "  GAMES_PER_WORKER : $GAMES_PER_WORKER"
 echo "  ITERATIONS       : $ITERATIONS"
 echo "  STOCKFISH_PATH   : $STOCKFISH_PATH"
-echo "  Log file         : $CHESS_AI_DIR/training_log.txt"
+echo "  Log file         : $PARENT_DIR/training_log.txt"
 echo "  EVAL_SIMULATIONS : $EVAL_SIMULATIONS"
 echo "  STOCKFISH_GAMES  : $STOCKFISH_GAMES"
 echo "  CUDA_TIMEOUT     : ${CUDA_TIMEOUT_INFERENCE}s"
@@ -244,17 +245,19 @@ echo ""
 
 # Run from chess_ai/ so 'game_engine' package is importable.
 # PYTHONPATH also includes chess_ai/game_engine/ so bare 'import mcts_engine_cpp' finds the .so.
-PARENT_DIR="$(dirname "$CHESS_AI_DIR")"
 cd "$PARENT_DIR"
 export PYTHONPATH="$CHESS_AI_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 if $BACKGROUND; then
   echo "  Running in background (nohup). PID will be written to logs/training.pid"
-  nohup python3 -m game_engine.main >> "$CHESS_AI_DIR/training_log.txt" 2>&1 &
+  # main.py's Logger writes ALL stdout to $PARENT_DIR/training_log.txt (chess_ai/). Send the
+  # process stdout to /dev/null (Logger already handles it) and append only stderr (segfaults /
+  # C++) to that SAME file → exactly one log, no duplicate under game_engine/.
+  nohup python3 -m game_engine.main >/dev/null 2>> "$PARENT_DIR/training_log.txt" &
   TRAIN_PID=$!
   echo "$TRAIN_PID" > "$CHESS_AI_DIR/logs/training.pid"
   echo "  Training started with PID $TRAIN_PID"
-  echo "  Follow logs: tail -f $CHESS_AI_DIR/training_log.txt"
+  echo "  Follow logs: tail -f $PARENT_DIR/training_log.txt"
 else
   python3 -m game_engine.main
 fi
