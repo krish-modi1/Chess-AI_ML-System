@@ -134,8 +134,11 @@ export AUX_W_REPLY=0.03
 # iter-10 regresses, disable individually to find the culprit (forced playouts is the most novel —
 # watch it first). The C++ ones (FPU/cpuct/forced) take effect on the .so rebuild run_gcp.sh does.
 export FPU_REDUCTION=0.5        # 1) First-Play-Urgency: unvisited child Q = parent_Q − 0.5·√(explored P), 0 at root
-export CPUCT_FACTOR=2.0         # 3) cpuct = CPUCT_INIT + 2.0·log((N+base)/base)  (Lc0 self-play)
-export FORCED_PLAYOUT_K=2.0     # 4) forced playouts + policy-target pruning, n_forced=√(2·P·ΣN)  (KataGo k=2)
+                               #    KEPT — it *concentrates* search (less exploration of unvisited), aligns w/ on-distribution.
+export CPUCT_FACTOR=1.0        # 3) PULLED BACK 2.0→1.0 (AlphaZero baseline). iter-9(=1) vs iter-10(=2) showed ZERO
+                               #    effect on target diffuseness, and 2.0 only adds off-distribution exploration.
+export FORCED_PLAYOUT_K=0      # 4) PULLED BACK 2.0→0 (disabled). No effect on diffuseness, most-novel, and it
+                               #    spreads visits (against the on-distribution thesis). See selfplay-offdistribution memory.
 export FULL_SEARCH_PROB=0.25    # 2) playout-cap: 25% of moves full+recorded, rest fast+unrecorded (Dirichlet off)
 export FAST_SIMULATIONS=200     #    fast-search sim count
 export SWA_ENABLE=1             # 5) stochastic weight averaging → offline swa_model.pth (probe vs candidate)
