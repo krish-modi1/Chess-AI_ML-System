@@ -505,6 +505,10 @@ STOCKFISH_GAMES = int(os.environ.get("STOCKFISH_GAMES", 20))
 # EVAL_WORKERS. Falls back to EVAL_WORKERS if unset.
 STOCKFISH_WORKERS = int(os.environ.get("STOCKFISH_WORKERS", EVAL_WORKERS))
 STOCKFISH_ELO = int(os.environ.get("STOCKFISH_ELO", 1320))
+# Measure the CANDIDATE's Elo vs Stockfish EVERY iteration (not just on promotion) — an absolute-
+# strength trend independent of the promotion gate, so we can see if the loop is climbing even when
+# nothing promotes. Default on.
+STOCKFISH_EVERY_ITER = os.environ.get("STOCKFISH_EVERY_ITER", "1") == "1"
 # Skip Phase 3 (arena + Stockfish eval) entirely — for local self-play/train validation.
 SKIP_EVAL = os.environ.get("SKIP_EVAL", "0") == "1"
 # Run eval but NEVER overwrite best_model.pth (dry-run promotion) — for testing the eval phase
@@ -1085,19 +1089,21 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss):
         _promote_best()
         arena_promoted = True
     else:
-        print(f" [Arena] Candidate rejected (WR < 55%).")
+        print(f" [Arena] Candidate rejected (WR < {100*PROMOTION_WIN_RATE:.0f}%).")
 
-    # 3. STOCKFISH EVALUATION — runs on the BEST model, and ONLY after a promotion (so the model
-    #    that just became champion gets an Elo measurement). It is metrics-only: it never promotes.
-    #    NO_PROMOTE is the dry-run/test mode — it exercises this phase without mutating the champion.
-    if arena_promoted or NO_PROMOTE:
-        print(f" [Stockfish/BayesElo] Playing {STOCKFISH_GAMES} games vs Elo {STOCKFISH_ELO} (BEST model)...")
+    # 3. STOCKFISH EVALUATION — Elo vs Stockfish. With STOCKFISH_EVERY_ITER (default on) we measure
+    #    the CANDIDATE every iteration to get an absolute-strength trend independent of the promotion
+    #    gate (after a promotion the candidate IS the new champion, so it doubles as the champion's
+    #    Elo). Metrics-only: it never promotes. NO_PROMOTE is the dry-run/test mode.
+    if STOCKFISH_EVERY_ITER or arena_promoted or NO_PROMOTE:
+        tag = "new champion" if arena_promoted else "candidate"
+        print(f" [Stockfish/BayesElo] Playing {STOCKFISH_GAMES} games vs Elo {STOCKFISH_ELO} ({tag})...")
         cleanup_memory()
         try:
             pgn_path = f"game_engine/evaluation/pgn/iter_{iteration}_{int(time.time())}.pgn"
-            # Server-routed: BEST model inference on ONE GPU server (batched), Stockfish on CPU.
+            # Measure the candidate (== best_model after a promotion). Server-routed: model on ONE GPU server.
             bayeselo_results = run_stockfish_eval_gpu(
-                model_path=BEST_MODEL,
+                model_path=CANDIDATE_MODEL,
                 num_games=STOCKFISH_GAMES,
                 stockfish_path=STOCKFISH_PATH,
                 sims=EVAL_SIMULATIONS,
@@ -1107,7 +1113,7 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss):
             )
             if bayeselo_results:
                 est_elo = bayeselo_results['model_elo']
-                print(f" [BayesElo] ✅ Model Elo: {est_elo:.0f}")
+                print(f" [BayesElo] ✅ {tag.capitalize()} Elo: {est_elo:.0f}")
                 print(f" [BayesElo] Record: {bayeselo_results['win_count']}-{bayeselo_results['draw_count']}-{bayeselo_results['loss_count']}")
             else:
                 print(f" [BayesElo] ❌ Failed to compute")
@@ -1117,7 +1123,7 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss):
             traceback.print_exc()
             est_elo = None
     else:
-        print(f" [Stockfish] Skipped (candidate not promoted).")
+        print(f" [Stockfish] Skipped (STOCKFISH_EVERY_ITER=0, no promotion).")
 
     logger.log(iteration, p_loss, v_loss, win_rate, est_elo, stockfish_elo=STOCKFISH_ELO,
                probe=probe_markers)

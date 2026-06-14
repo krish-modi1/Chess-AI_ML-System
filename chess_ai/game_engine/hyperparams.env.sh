@@ -97,9 +97,17 @@ export ARENA_EARLY_STOP=1        # stop the arena once the 150-game gate is math
 export PROBE_ON_ITER=1           # auto-run probe_all + search_probe before the arena each iter and
                                  # log markers (value_acc_gap, search_kl) to metrics.json for a trend.
                                  # See local/plans/baked-in-probes.md
-export STOCKFISH_GAMES=100       # stockfish: 100 games for a tighter Elo estimate
-export STOCKFISH_WORKERS=25      # 25 CPU-Stockfish workers × 4 games each = 100
+export STOCKFISH_GAMES=40        # was 100. Now run EVERY iter (STOCKFISH_EVERY_ITER) so trimmed to 40
+                                # to bound the per-iter cost; still a usable Elo trend.
+export STOCKFISH_WORKERS=20      # 20 CPU-Stockfish workers × 2 games each = 40
 export STOCKFISH_ELO=1800
+export STOCKFISH_EVERY_ITER=1    # measure the CANDIDATE's Elo every iteration (absolute-strength
+                                # trend independent of the promotion gate), not just on promotion.
+
+# AlphaZero (1712.01815) dropped AlphaGo-Zero's evaluator gate entirely (continuous update). We keep
+# a gate for small-scale stability but SOFTEN it 0.55→0.50 ("promote unless clearly worse") so the
+# frozen champion can finally move and marginal gains compound. The KL-anchor is our stability guard.
+export PROMOTION_WIN_RATE=0.50
 export MAX_MOVES_PER_GAME=800
 export EVAL_MAX_MOVES_PER_GAME=800
 
