@@ -517,6 +517,10 @@ NO_PROMOTE = os.environ.get("NO_PROMOTE", "0") == "1"
 # local/plans/arena-early-stop.md.
 PROMOTION_WIN_RATE = float(os.environ.get("PROMOTION_WIN_RATE", 0.55))
 ARENA_EARLY_STOP = os.environ.get("ARENA_EARLY_STOP", "1") == "1"
+# Run the offline probes (probe_all + search_probe) automatically each iteration before the arena,
+# logging the headline markers to metrics.json for a per-iteration trend. See
+# local/plans/baked-in-probes.md.
+PROBE_ON_ITER = os.environ.get("PROBE_ON_ITER", "1") == "1"
 
 # --- RULES ---
 MAX_MOVES_PER_GAME = int(os.environ.get("MAX_MOVES_PER_GAME", 800))
@@ -1006,8 +1010,56 @@ def run_training_phase(iteration):
     _update_swa()
     return p_loss, v_loss
 
+def run_probes(iteration):
+    """Offline diagnostics (read-only) run before the arena: value-head calibration vs the champion
+    anchor (probe_all) and policy-target sharpness (search_probe). Subprocess the standalone scripts
+    so their full output lands in training_log.txt, then parse the headline markers for metrics.json
+    (a per-iteration trend). NEVER raises — diagnostics must not break the iteration. CPU-only, so it
+    won't contend with the arena's GPU servers. See local/plans/baked-in-probes.md."""
+    import subprocess, re
+    if not PROBE_ON_ITER:
+        return None
+    here = os.path.dirname(os.path.abspath(__file__))   # .../game_engine
+    cwd = os.path.dirname(here)                          # .../chess_ai (scripts use game_engine/ paths)
+    markers = {}
+    print(f"\n=== ITERATION {iteration}: PROBES (offline diagnostics) ===")
+
+    # probe_all: champion (best_model) anchor vs candidate (+ swa) on the window. value_acc_gap =
+    # cand − champ is the drift-controlled value-head marker.
+    try:
+        cmd = [sys.executable, "game_engine/probe_all.py",
+               f"champ={BEST_MODEL}", f"cand={CANDIDATE_MODEL}", f"swa={MODEL_DIR}/swa_model.pth",
+               "--data", DATA_DIR, "--games-per-iter", "60"]
+        out = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=900).stdout
+        print(out)
+        accs = dict(re.findall(r"^\s*(\w+)\s+mean\|v\|=.*?acc=\s*(\d+)%", out, re.M))
+        if "cand" in accs and "champ" in accs:
+            markers["value_acc_cand"] = int(accs["cand"])
+            markers["value_acc_champ"] = int(accs["champ"])
+            markers["value_acc_gap"] = int(accs["cand"]) - int(accs["champ"])
+    except Exception as e:
+        print(f"  [probe] probe_all failed: {e}")
+
+    # search_probe: candidate vs the stored MCTS targets on THIS iter's data (meaningful from iter-10).
+    try:
+        cmd = [sys.executable, "game_engine/search_probe.py",
+               "--model", CANDIDATE_MODEL, "--data", DATA_DIR, "--iter", str(iteration)]
+        out = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=900).stdout
+        print(out)
+        mkl = re.search(r"KL\(MCTS.*?:\s*([\d.]+)\s*nats", out)
+        mov = re.search(r"override.*?:\s*([\d.]+)%", out)
+        if mkl: markers["search_kl"] = float(mkl.group(1))
+        if mov: markers["search_override"] = float(mov.group(1))
+    except Exception as e:
+        print(f"  [probe] search_probe failed: {e}")
+
+    print(f"  [probe] markers iter {iteration}: {markers}")
+    return markers or None
+
+
 def run_evaluation_phase(iteration, logger, p_loss, v_loss):
     print(f"\n=== ITERATION {iteration}: EVALUATION PHASE ===")
+    probe_markers = run_probes(iteration)
     cleanup_memory() # Clear VRAM before launching multiple evaluation workers
 
     # 1. ARENA EVALUATION — candidate vs champion, each on its own GPU InferenceServer.
@@ -1067,7 +1119,8 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss):
     else:
         print(f" [Stockfish] Skipped (candidate not promoted).")
 
-    logger.log(iteration, p_loss, v_loss, win_rate, est_elo, stockfish_elo=STOCKFISH_ELO)
+    logger.log(iteration, p_loss, v_loss, win_rate, est_elo, stockfish_elo=STOCKFISH_ELO,
+               probe=probe_markers)
 
 if __name__ == "__main__":
     setup_child_logging()

@@ -94,6 +94,9 @@ export GAMES_PER_EVAL_WORKER=5
 export ARENA_EARLY_STOP=1        # stop the arena once the 150-game gate is mathematically decided
                                  # (reject if 55% unreachable, promote if already clinched) → the
                                  # saved L4 time goes to self-play. See local/plans/arena-early-stop.md
+export PROBE_ON_ITER=1           # auto-run probe_all + search_probe before the arena each iter and
+                                 # log markers (value_acc_gap, search_kl) to metrics.json for a trend.
+                                 # See local/plans/baked-in-probes.md
 export STOCKFISH_GAMES=100       # stockfish: 100 games for a tighter Elo estimate
 export STOCKFISH_WORKERS=25      # 25 CPU-Stockfish workers × 4 games each = 100
 export STOCKFISH_ELO=1800

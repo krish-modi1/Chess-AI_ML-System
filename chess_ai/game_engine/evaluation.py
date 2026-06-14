@@ -14,7 +14,7 @@ class MetricsLogger:
     """Log training metrics to JSON file."""
 
     @staticmethod
-    def log(iteration, p_loss, v_loss, arena_win_rate, elo, stockfish_elo=None):
+    def log(iteration, p_loss, v_loss, arena_win_rate, elo, stockfish_elo=None, probe=None):
         """
         Log iteration metrics.
 
@@ -25,6 +25,7 @@ class MetricsLogger:
             arena_win_rate: Win rate from arena evaluation (0-1)
             elo: Model Elo rating from BayesElo (or None)
             stockfish_elo: Stockfish Elo used for evaluation
+            probe: Optional dict of offline-probe markers (value_acc_gap, search_kl, ...) merged in
         """
         data = {
             "iteration": iteration,
@@ -35,6 +36,8 @@ class MetricsLogger:
             "model_elo": float(elo) if elo is not None else None,
             "stockfish_elo": int(stockfish_elo) if stockfish_elo is not None else None,
         }
+        if probe:
+            data.update(probe)
 
         _metrics_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model")
         os.makedirs(_metrics_dir, exist_ok=True)
