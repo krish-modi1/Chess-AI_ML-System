@@ -93,6 +93,10 @@ def scan_window_files(data_dir, window_size=20):
         sorted_subdirs = sorted(subdirs, key=lambda x: int(x.split("_")[1]))
     except ValueError:
         sorted_subdirs = []
+    # Drop iterations older than TRAIN_MIN_ITER (e.g. pre-1200-sim 800-sim data). 0 = keep all.
+    _min_iter = int(os.environ.get("TRAIN_MIN_ITER", 0))
+    if _min_iter > 0:
+        sorted_subdirs = [d for d in sorted_subdirs if int(d.split("_")[1]) >= _min_iter]
     active_folders = sorted_subdirs[-window_size:] if sorted_subdirs else []
     if not active_folders:
         print("No iteration data folders found.")
@@ -281,9 +285,12 @@ def train_model(data_path="data/self_play",
                 batch_size=256,
                 lr=0.0001,
                 window_size=20,
-                total_iterations=1000):
+                total_iterations=1000,
+                anchor_model_path=None):
     """
     Trains the model on data from data_path.
+    `anchor_model_path` is the FROZEN KL-anchor reference (pretrained); if None, the training base
+    (input_model_path) is used — so train-from-lineage can evolve the base while the anchor stays pretrained.
     Returns: (avg_policy_loss, avg_value_loss)
     """
     warnings.filterwarnings('ignore')
@@ -388,15 +395,25 @@ def train_model(data_path="data/self_play",
             if _nonaux_missing or _ld.unexpected_keys:
                 print(f"  ⚠️ load_state_dict mismatch — non-aux MISSING={_nonaux_missing} "
                       f"UNEXPECTED={list(_ld.unexpected_keys)} (a near-random trunk would train silently)")
-            # KL-anchor: a frozen copy of the pretrained base. Its policy is the prior the
-            # candidate is penalized for drifting from (anti-forgetting on small early data).
+            # KL-anchor: a FROZEN pretrained prior the candidate is penalized for drifting from
+            # (anti-forgetting). Loaded from anchor_model_path so it stays pretrained even when the
+            # training base (input_model_path) is the evolving candidate lineage.
             if KL_ANCHOR_BETA > 0:
                 anchor = ChessCNN().to(device)
-                anchor.load_state_dict(sd, strict=False)
+                a_path = anchor_model_path if (anchor_model_path and os.path.exists(anchor_model_path)) else None
+                if a_path:
+                    a_raw = torch.load(a_path, map_location=device)
+                    a_sd = (a_raw.get('model_state_dict') or a_raw.get('state_dict') or a_raw) \
+                        if isinstance(a_raw, dict) else a_raw
+                    a_sd = {k.removeprefix('_orig_mod.'): v for k, v in a_sd.items()}
+                    anchor.load_state_dict(a_sd, strict=False)
+                else:
+                    anchor.load_state_dict(sd, strict=False)
                 anchor.eval()
                 for p in anchor.parameters():
                     p.requires_grad_(False)
-                print(f"KL-anchor ON: beta={KL_ANCHOR_BETA} (frozen pretrained prior)")
+                print(f"KL-anchor ON: beta={KL_ANCHOR_BETA} (frozen prior from "
+                      f"{os.path.basename(a_path) if a_path else os.path.basename(input_model_path)})")
         except Exception as e:
             print(f"Error loading model, starting fresh: {e}")
     else:

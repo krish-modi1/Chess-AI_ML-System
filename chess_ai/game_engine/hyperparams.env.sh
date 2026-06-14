@@ -115,6 +115,11 @@ export EVAL_MAX_MOVES_PER_GAME=800
 # is weak off the human distribution (gives MCTS-chosen moves ~0.7% median mass), so targets
 # demand large shifts; 4 epochs × 3e-4 over a tiny early window overwrote the net (1800→~1300).
 # See local/plans/anti-forgetting-levers.md.
+export TRAIN_MIN_ITER=8        # window starts at iter-8 (the 1200-sim switch) — drop the stale 800-sim
+                              # data from iters 1-7. See on-distribution diagnosis.
+export TRAIN_FROM_LINEAGE=1   # train each candidate from the previous candidate (continual), not the
+                              # frozen champion — gains compound. Anchor stays pinned to pretrained.
+export TEMP_MOVES=8           # was 16. Halve the random-opening window to keep self-play on-distribution.
 export TRAIN_EPOCHS=2          # 1→2: extract more from the decorrelated buffer (safe now that cap=20
                               # prevents the overfitting that 4 epochs caused at iter-1)
 export TRAIN_LR=1e-4           # was 3e-4 — gentler AdamW fine-tune
@@ -134,7 +139,7 @@ export VALUE_LOSS_WEIGHT=1.0       # no-op: A/B showed value-loss weight has zer
 # (~1.3) / v_loss (~0.85). CONFIRM/tune from iter-8's epoch-1 "aux (raw, pre-weight)" log line.
 # 0 = off. See local/plans/auxiliary-targets.md.
 export AUX_W_MAT=0.5
-export AUX_W_PLIES=0.5
+export AUX_W_PLIES=0        # DROPPED — plies head wasn't learning (flat ~0.14), just trunk-gradient noise.
 export AUX_W_REPLY=0.03
 
 # ── Search/training upgrades (master-table easy wins) — see local/plans/upgrades-1-6.md ──

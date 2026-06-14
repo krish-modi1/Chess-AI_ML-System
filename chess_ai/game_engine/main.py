@@ -268,7 +268,7 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                 move_start = time.time()
                 move_count = len(game.moves)
 
-                if move_count < 16:
+                if move_count < TEMP_MOVES:
                     current_temp = 1.0
                 else:
                     current_temp = 0.0
@@ -486,6 +486,9 @@ REDUCED_SIMULATIONS = int(os.environ.get("REDUCED_SIMULATIONS", 100))
 # every move = current behavior). See local/plans/upgrades-1-6.md.
 FULL_SEARCH_PROB = float(os.environ.get("FULL_SEARCH_PROB", 0.0))
 FAST_SIMULATIONS = int(os.environ.get("FAST_SIMULATIONS", 200))
+# Opening exploration: sample the played move (temperature=1) for the first TEMP_MOVES plies, then
+# greedy. Lower = stay closer to the prior's lines (less off-distribution opening drift). AZ used ~30.
+TEMP_MOVES = int(os.environ.get("TEMP_MOVES", 16))
 
 # --- No-progress (dead-draw) cut (self-play only) ---
 # The decided-game cut above only fires on WON positions (|value| high). Long DRAWN games have
@@ -540,6 +543,9 @@ current_iter = get_start_iteration(DATA_DIR) - 1
 # Training
 TRAIN_EPOCHS = int(os.environ.get("TRAIN_EPOCHS", 4))
 TRAIN_WINDOW = int(os.environ.get("TRAIN_WINDOW", 20))   # train on the last 20 iterations' self-play data
+# Train-from-lineage (AlphaZero continual): each iter builds on the latest candidate, not the frozen
+# champion, so gains accumulate in the weights. Anchor stays pinned to a frozen pretrained snapshot.
+TRAIN_FROM_LINEAGE = os.environ.get("TRAIN_FROM_LINEAGE", "0") == "1"
 # TRAIN_BATCH_SIZE is sized for the 22 GB L4 (uses ~20 GB). Override low (e.g. 128) for
 # small local GPUs — backprop activation memory across 20 blocks scales with batch size.
 TRAIN_BATCH_SIZE = int(os.environ.get("TRAIN_BATCH_SIZE", 2048))
@@ -1002,14 +1008,29 @@ def run_training_phase(iteration):
             if free_gb < target_gb:
                 print(f"  ⚠️ VRAM did not drain after 120s — proceeding ({free_gb:.1f} GB free)")
     
+    # Frozen KL-anchor reference = a one-time pretrained snapshot. best_model is pretrained until the
+    # first promotion, so capture it now (before any 0.50-gate promotion can change it).
+    pretrained_anchor = f"{MODEL_DIR}/pretrained_anchor.pth"
+    if not os.path.exists(pretrained_anchor):
+        shutil.copy(BEST_MODEL, pretrained_anchor)
+        print(f"  Captured frozen KL-anchor reference → {pretrained_anchor}")
+
+    # Train-from-lineage: build on the latest candidate (continual), not the frozen champion, so
+    # gains compound. Anchor stays pinned to pretrained for stability.
+    train_base = BEST_MODEL
+    if TRAIN_FROM_LINEAGE and os.path.exists(CANDIDATE_MODEL):
+        train_base = CANDIDATE_MODEL
+        print(f"  Train-from-lineage: base = candidate.pth (anchor pinned to pretrained)")
+
     p_loss, v_loss = train_model(data_path=DATA_DIR,
-                input_model_path=BEST_MODEL,
+                input_model_path=train_base,
                 output_model_path=CANDIDATE_MODEL,
                 epochs=TRAIN_EPOCHS,
                 batch_size=TRAIN_BATCH_SIZE,
                 lr=TRAIN_LR,
                 window_size=TRAIN_WINDOW,
-                total_iterations=ITERATIONS)
+                total_iterations=ITERATIONS,
+                anchor_model_path=pretrained_anchor)
 
     _update_swa()
     return p_loss, v_loss
