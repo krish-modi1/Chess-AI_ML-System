@@ -510,6 +510,13 @@ SKIP_EVAL = os.environ.get("SKIP_EVAL", "0") == "1"
 # Run eval but NEVER overwrite best_model.pth (dry-run promotion) — for testing the eval phase
 # without mutating the champion.
 NO_PROMOTE = os.environ.get("NO_PROMOTE", "0") == "1"
+# Arena promotion gate + early-stop. Once the full-arena outcome is mathematically decided —
+# candidate can't reach the gate even winning every remaining game (reject), or has already
+# clinched it even losing every remaining game (promote) — signal workers to stop so the saved L4
+# time goes to self-play. Zero risk: both are hard bounds on the final win-rate. See
+# local/plans/arena-early-stop.md.
+PROMOTION_WIN_RATE = float(os.environ.get("PROMOTION_WIN_RATE", 0.55))
+ARENA_EARLY_STOP = os.environ.get("ARENA_EARLY_STOP", "1") == "1"
 
 # --- RULES ---
 MAX_MOVES_PER_GAME = int(os.environ.get("MAX_MOVES_PER_GAME", 800))
@@ -680,7 +687,7 @@ def run_stockfish_eval_gpu(model_path, num_games, stockfish_path, sims, sf_elo, 
 
 def run_arena_server_worker(worker_id, n_games, cand_in_q, cand_out_q, champ_in_q, champ_out_q,
                             sims, worker_batch, max_moves, result_q, cand_shm, champ_shm,
-                            tally=None, total_games=0):
+                            tally=None, total_games=0, stop_flag=None):
     """Play n_games of Candidate-vs-Champion. Each model's MCTS inference is routed to its OWN
     shared GPU InferenceServer (candidate server + champion server), so the GPU holds exactly 2
     model copies regardless of worker count — vs the old inline path that loaded 2 models ×
@@ -698,6 +705,8 @@ def run_arena_server_worker(worker_id, n_games, cand_in_q, cand_out_q, champ_in_
     w = d = l = fd = 0
     try:
         for gi in range(n_games):
+            if stop_flag is not None and stop_flag.value != 0:
+                break  # arena early-stop: the promotion gate is already mathematically decided
             game_id = worker_id * n_games + gi
             game = ChessGame()
             cand_is_white = (game_id % 2 == 0)
@@ -751,6 +760,15 @@ def run_arena_server_worker(worker_id, n_games, cand_in_q, cand_out_q, champ_in_
                 wr = (tw + 0.5 * td + 0.5 * tfd) / tot if tot else 0.0
                 line += (f"  ||  W-D-L-FD {tw}-{td}-{tl}-{tfd}  WR {100*wr:4.1f}%"
                          f"  ({tot}/{total_games})")
+                # Early-stop once the FULL-total_games gate is mathematically decided. Hard bounds
+                # (zero risk): score = W + 0.5(D+FD); a loss is the worst possible remaining game.
+                if ARENA_EARLY_STOP and stop_flag is not None and total_games > 0:
+                    score = tw + 0.5 * td + 0.5 * tfd
+                    need = PROMOTION_WIN_RATE * total_games
+                    if score + (total_games - tot) < need:   # can't reach the gate even winning out
+                        stop_flag.value = 1                  # → reject
+                    elif score >= need:                      # already clinched even losing out
+                        stop_flag.value = 2                  # → promote
             print(line)
     except Exception as e:
         print(f"[Arena Worker {worker_id}] ❌ CRASHED: {e}")
@@ -773,12 +791,13 @@ def run_arena_eval_gpu(cand_model, champ_model, num_games, sims, max_moves):
 
     result_q = mp.Queue()
     tally = mp.Array('i', 4)   # shared running [wins, draws, losses, forced_draws] across workers
+    stop_flag = mp.Value('i', 0)   # arena early-stop: 0=run, 1=eliminated(reject), 2=clinched(promote)
     workers = []
     for i in range(n_workers):
         p = mp.Process(target=run_arena_server_worker,
                        args=(i, per[i], cand_server.input_queue, cand_wq[i],
                              champ_server.input_queue, champ_wq[i], sims, WORKER_BATCH_SIZE,
-                             max_moves, result_q, cand_shm, champ_shm, tally, num_games))
+                             max_moves, result_q, cand_shm, champ_shm, tally, num_games, stop_flag))
         p.start(); workers.append(p)
 
     totals = {"wins": 0, "draws": 0, "losses": 0, "forced_draws": 0}
@@ -801,7 +820,16 @@ def run_arena_eval_gpu(cand_model, champ_model, num_games, sims, max_moves):
     # per-game and survives worker death, so it is the authoritative count for the gate.
     tw, td, tl, tfd = int(tally[0]), int(tally[1]), int(tally[2]), int(tally[3])
     tally_games = tw + td + tl + tfd
-    if tally_games != sum(totals.values()) or tally_games < num_games:
+    es = int(stop_flag.value)
+    if es == 1:
+        print(f"  ⏹ Arena early-stop: candidate ELIMINATED after {tally_games}/{num_games} games "
+              f"(can't reach {100*PROMOTION_WIN_RATE:.0f}% even winning out) → reject "
+              f"(~{num_games - tally_games} games of self-play time reclaimed).")
+    elif es == 2:
+        print(f"  ⏹ Arena early-stop: candidate CLINCHED ≥{100*PROMOTION_WIN_RATE:.0f}% after "
+              f"{tally_games}/{num_games} games (champion can't catch up) → promote "
+              f"(~{num_games - tally_games} games of self-play time reclaimed).")
+    elif tally_games != sum(totals.values()) or tally_games < num_games:
         print(f"  ⚠️ Arena count: result_q aggregate={sum(totals.values())} vs shared tally="
               f"{tally_games}/{num_games} games — using the shared tally for the gate.")
     return {"wins": tw, "draws": td, "losses": tl, "forced_draws": tfd}
@@ -1000,8 +1028,8 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss):
     arena_promoted = False
 
     # 2. PROMOTION — the arena win-rate is the SOLE promotion gate.
-    if win_rate >= 0.55:
-        print(f" [Arena] ⭐ Candidate PROMOTED! (WR >= 55%) ⭐")
+    if win_rate >= PROMOTION_WIN_RATE:
+        print(f" [Arena] ⭐ Candidate PROMOTED! (WR >= {100*PROMOTION_WIN_RATE:.0f}%) ⭐")
         _promote_best()
         arena_promoted = True
     else:

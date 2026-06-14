@@ -91,6 +91,9 @@ export GAMES_PER_WORKER=10
 export ITERATIONS=1000
 export EVAL_WORKERS=30           # arena: 30 workers × 5 games = 150 games (stabler promotion gate)
 export GAMES_PER_EVAL_WORKER=5
+export ARENA_EARLY_STOP=1        # stop the arena once the 150-game gate is mathematically decided
+                                 # (reject if 55% unreachable, promote if already clinched) → the
+                                 # saved L4 time goes to self-play. See local/plans/arena-early-stop.md
 export STOCKFISH_GAMES=100       # stockfish: 100 games for a tighter Elo estimate
 export STOCKFISH_WORKERS=25      # 25 CPU-Stockfish workers × 4 games each = 100
 export STOCKFISH_ELO=1800
