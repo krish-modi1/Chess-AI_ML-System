@@ -107,5 +107,47 @@
     "value_acc_gap": 3,
     "search_kl": 1.082,
     "search_override": 90.6
+  },
+  {
+    "iteration": 13,
+    "timestamp": "2026-06-15T02:45:15.790283",
+    "policy_loss": 3.9112665255864463,
+    "value_loss": 0.8741084078947703,
+    "arena_win_rate": 0.523972602739726,
+    "model_elo": 1390.0,
+    "stockfish_elo": 1800,
+    "value_acc_cand": 59,
+    "value_acc_champ": 56,
+    "value_acc_gap": 3,
+    "search_kl": 0.942,
+    "search_override": 91.2
+  },
+  {
+    "iteration": 14,
+    "timestamp": "2026-06-15T07:41:15.661339",
+    "policy_loss": 3.779062632152012,
+    "value_loss": 0.8620947190693447,
+    "arena_win_rate": 0.5167785234899329,
+    "model_elo": 1294.0,
+    "stockfish_elo": 1800,
+    "value_acc_cand": 59,
+    "value_acc_champ": 59,
+    "value_acc_gap": 0,
+    "search_kl": 0.603,
+    "search_override": 88.0
+  },
+  {
+    "iteration": 15,
+    "timestamp": "2026-06-15T15:29:01.592707",
+    "policy_loss": 3.754829341173172,
+    "value_loss": 0.8645685032010079,
+    "arena_win_rate": 0.5413793103448276,
+    "model_elo": 1222.0,
+    "stockfish_elo": 1800,
+    "value_acc_cand": 59,
+    "value_acc_champ": 59,
+    "value_acc_gap": 0,
+    "search_kl": 0.549,
+    "search_override": 91.3
   }
 ]
