@@ -104,14 +104,14 @@ export STOCKFISH_GAMES=150       # 150 for a tight BayesElo estimate (±~45 vs �
                                 # trend is the scoreboard and needs low noise to be readable.
 export STOCKFISH_WORKERS=25      # 25 workers × 6 games = 150 → 3 White + 3 Black per worker (balanced,
                                 # same game_id%2 alternation as the arena worker).
-export STOCKFISH_ELO=1800
-export STOCKFISH_EVERY_ITER=1    # measure the CANDIDATE's Elo every iteration (absolute-strength
-                                # trend independent of the promotion gate), not just on promotion.
+export STOCKFISH_ELO=1320
+export STOCKFISH_EVERY_ITER=0    # OFF: measure champion Elo only on promotion (saves Stockfish compute
+                                # — budget). With lineage-off the champion is HELD; arena WR is the per-iter signal.
 
-# AlphaZero (1712.01815) dropped AlphaGo-Zero's evaluator gate entirely (continuous update). We keep
-# a gate for small-scale stability but SOFTEN it 0.55→0.50 ("promote unless clearly worse") so the
-# frozen champion can finally move and marginal gains compound. The KL-anchor is our stability guard.
-export PROMOTION_WIN_RATE=0.50
+# Gate RAISED back to 0.55 to PROTECT the iter-3 (1524) champion. iters 13-15 degraded 1524→1222 via
+# promotions at 0.52-0.54 — a 0.55 gate rejects those cycling-equal candidates and only promotes a
+# CLEARLY-better net. With lineage-off, this HOLDS 1524 instead of bleeding it down.
+export PROMOTION_WIN_RATE=0.55
 export MAX_MOVES_PER_GAME=800
 export EVAL_MAX_MOVES_PER_GAME=800
 
