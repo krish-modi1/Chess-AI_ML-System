@@ -27,18 +27,6 @@ class MetricsLogger:
             stockfish_elo: Stockfish Elo used for evaluation
             probe: Optional dict of offline-probe markers (value_acc_gap, search_kl, ...) merged in
         """
-        data = {
-            "iteration": iteration,
-            "timestamp": datetime.now().isoformat(),
-            "policy_loss": float(p_loss),
-            "value_loss": float(v_loss),
-            "arena_win_rate": float(arena_win_rate),
-            "model_elo": float(elo) if elo is not None else None,
-            "stockfish_elo": int(stockfish_elo) if stockfish_elo is not None else None,
-        }
-        if probe:
-            data.update(probe)
-
         _metrics_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model")
         os.makedirs(_metrics_dir, exist_ok=True)
         metrics_file = os.path.join(_metrics_dir, "metrics.json")
@@ -52,6 +40,30 @@ class MetricsLogger:
                         metrics = []
             except Exception:
                 metrics = []
+
+        # No promotion this iter (elo is None) → champion (best_model) is unchanged, so carry forward
+        # its last measured Elo instead of logging null — keeps a continuous trend line. elo_measured
+        # flags fresh measurements vs held carry-forwards. (Stale right after a MANUAL champion swap
+        # until the next real measurement — seed it with a one-off eval after a rollback.)
+        elo_measured = elo is not None
+        if elo is None:
+            for m in reversed(metrics):
+                if m.get("model_elo") is not None:
+                    elo = m["model_elo"]
+                    break
+
+        data = {
+            "iteration": iteration,
+            "timestamp": datetime.now().isoformat(),
+            "policy_loss": float(p_loss),
+            "value_loss": float(v_loss),
+            "arena_win_rate": float(arena_win_rate),
+            "model_elo": float(elo) if elo is not None else None,
+            "elo_measured": elo_measured,
+            "stockfish_elo": int(stockfish_elo) if stockfish_elo is not None else None,
+        }
+        if probe:
+            data.update(probe)
 
         metrics.append(data)
 
