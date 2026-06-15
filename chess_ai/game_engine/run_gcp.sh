@@ -6,18 +6,18 @@ set -euo pipefail
 # ──────────────────────────────────────────────────────────────────────────────
 # 0. Pre-flight: sudo check (warn-only — packages may already be installed)
 # ──────────────────────────────────────────────────────────────────────────────
-HAS_SUDO=false
-if sudo -n true 2>/dev/null || sudo -v 2>/dev/null; then
+# Privilege detection — portable across GCP (sudo), Vast.ai/RunPod Docker (root, no sudo binary), local.
+if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
   HAS_SUDO=true
+  sudo_run() { "$@"; }                          # already root (Docker) — run directly, no sudo
+elif sudo -n true 2>/dev/null || sudo -v 2>/dev/null; then
+  HAS_SUDO=true
+  sudo_run() { sudo "$@"; }
 else
-  echo "WARNING: sudo not available. Skipping any apt installs."
-  echo "  If packages are missing, fix sudo via GCP IAM:"
-  echo "    IAM & Admin → IAM → Add role: 'Compute OS Admin Login'"
-  echo "  Then reconnect SSH (gcloud compute ssh ...) and re-run."
+  HAS_SUDO=false
+  sudo_run() { echo "  [skip — no sudo/root] $*"; }
+  echo "WARNING: not root and no sudo — skipping apt installs (deps must be pre-installed)."
 fi
-
-# Helper: run a command only when we have sudo
-sudo_run() { $HAS_SUDO && sudo "$@" || echo "  [skip — no sudo] $*"; }
 
 if ! command -v git &>/dev/null; then
   echo "[pre] git not found — installing..."
@@ -97,10 +97,10 @@ dpkg -s python3-pip &>/dev/null 2>&1  || MISSING_PKGS+=(python3-pip)
 if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
   echo "  Missing packages: ${MISSING_PKGS[*]}"
   if $HAS_SUDO; then
-    sudo apt-get update -qq
-    sudo apt-get install -y "${MISSING_PKGS[@]}"
+    sudo_run apt-get update -qq
+    sudo_run apt-get install -y "${MISSING_PKGS[@]}"
   else
-    echo "  WARNING: Cannot install — no sudo. Continuing anyway (may fail later)."
+    echo "  WARNING: Cannot install — no sudo/root. Continuing anyway (may fail later)."
   fi
 else
   echo "  All system dependencies already installed."
