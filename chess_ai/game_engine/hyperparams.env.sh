@@ -89,17 +89,20 @@ export DECIDED_PATIENCE=5
 export REDUCED_SIMULATIONS=100
 export GAMES_PER_WORKER=10
 export ITERATIONS=1000
-export EVAL_WORKERS=30           # arena: 30 workers × 5 games = 150 games (stabler promotion gate)
-export GAMES_PER_EVAL_WORKER=5
+export EVAL_WORKERS=25           # arena: 25 workers × 6 games = 150. 6 is EVEN, and game_id=worker*6+gi
+export GAMES_PER_EVAL_WORKER=6   # so each worker alternates W,B,W,B,W,B = 3 White + 3 Black — color is
+                                 # balanced PER worker (removes white-advantage bias, robust to a dropped worker).
 export ARENA_EARLY_STOP=1        # stop the arena once the 150-game gate is mathematically decided
                                  # (reject if 55% unreachable, promote if already clinched) → the
                                  # saved L4 time goes to self-play. See local/plans/arena-early-stop.md
 export PROBE_ON_ITER=1           # auto-run probe_all + search_probe before the arena each iter and
                                  # log markers (value_acc_gap, search_kl) to metrics.json for a trend.
                                  # See local/plans/baked-in-probes.md
-export STOCKFISH_GAMES=40        # was 100. Now run EVERY iter (STOCKFISH_EVERY_ITER) so trimmed to 40
-                                # to bound the per-iter cost; still a usable Elo trend.
-export STOCKFISH_WORKERS=20      # 20 CPU-Stockfish workers × 2 games each = 40
+export STOCKFISH_GAMES=150       # 150 for a tight BayesElo estimate (±~45 vs ±~75 at 40). Runs EVERY
+                                # iter (STOCKFISH_EVERY_ITER) so it's a real per-iter cost, but the Elo
+                                # trend is the scoreboard and needs low noise to be readable.
+export STOCKFISH_WORKERS=25      # 25 workers × 6 games = 150 → 3 White + 3 Black per worker (balanced,
+                                # same game_id%2 alternation as the arena worker).
 export STOCKFISH_ELO=1800
 export STOCKFISH_EVERY_ITER=1    # measure the CANDIDATE's Elo every iteration (absolute-strength
                                 # trend independent of the promotion gate), not just on promotion.
