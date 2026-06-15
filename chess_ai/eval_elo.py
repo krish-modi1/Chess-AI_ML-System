@@ -149,7 +149,8 @@ def main():
     p.add_argument('--sims',      type=int,   default=400,  help='MCTS simulations per move')
     p.add_argument('--batch',     type=int,   default=8,    help='MCTS leaf batch size')
     p.add_argument('--move-time', type=float, default=0.1,  help='Stockfish seconds per move')
-    p.add_argument('--workers',   type=int,   default=1,    help='parallel game-playing processes (GCP: ~25). Each loads its own model on the GPU.')
+    p.add_argument('--workers',   type=int,   default=1,    help='parallel game-playing processes. Standalone mode: each loads its own model on the GPU (caps ~12 on a 22GB L4). With --server: CPU workers routed to one shared GPU model (25-30 OK).')
+    p.add_argument('--server',    action='store_true',      help='GPU-efficient: 1 shared model on the GPU + N CPU workers (batched), via the pipeline\'s run_stockfish_eval_gpu. No per-process CUDA contexts → no OOM at 25-30 workers; matches the training loop\'s per-iter Elo exactly.')
     p.add_argument('--out',       default='eval_games.pgn', help='Output PGN path')
     args = p.parse_args()
 
@@ -161,6 +162,28 @@ def main():
     pgn_path = args.out
     results_path = pgn_path.replace('.pgn', '_bayeselo.txt')
     wins = draws = losses = 0
+
+    if args.server:
+        # GPU-efficient: ONE model on a shared inference server + N CPU workers (batched). No
+        # per-process CUDA contexts → 25-30 workers fit in ~one model's memory. Reuses the pipeline's
+        # run_stockfish_eval_gpu, so the Elo is identical-methodology to the loop's per-iter eval.
+        os.environ['STOCKFISH_WORKERS'] = str(args.workers)
+        os.environ.setdefault('WORKER_BATCH_SIZE', str(args.batch))
+        os.environ.setdefault('CUDA_STREAMS', '6')
+        os.environ.setdefault('CUDA_BATCH_SIZE', str(max(64, args.workers * args.batch)))
+        os.environ.setdefault('CUDA_TIMEOUT_INFERENCE', '0.02')
+        mp.set_start_method('spawn', force=True)
+        from game_engine.main import run_stockfish_eval_gpu
+        print(f'  Shared-server eval: 1 GPU model + {args.workers} CPU workers (batched)')
+        res = run_stockfish_eval_gpu(model_path=args.model, num_games=args.games,
+                                     stockfish_path=args.stockfish, sims=args.sims, sf_elo=args.elo,
+                                     max_moves=800, pgn_path=pgn_path)
+        if res:
+            print(f"\n── Result ──\n  Model Elo: {res['model_elo']:.0f}  |  "
+                  f"W-D-L: {res['win_count']}-{res['draw_count']}-{res['loss_count']}  (vs SF {args.elo})")
+        else:
+            print('  eval failed — check logs / bayeselo binary')
+        return
 
     if args.workers > 1:
         # Parallel: split games across processes; each loads its own model + engine on the GPU.
