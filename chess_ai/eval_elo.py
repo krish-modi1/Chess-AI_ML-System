@@ -141,7 +141,8 @@ def _eval_worker(worker_id, n_games, color_start, model_path, stockfish_path, sf
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--model',     required=True,            help='Path to best_model.pth')
-    p.add_argument('--stockfish', default='stockfish',      help='Stockfish binary')
+    p.add_argument('--stockfish', default=os.environ.get('STOCKFISH_PATH', '/usr/games/stockfish'),
+                   help='Stockfish binary (default: $STOCKFISH_PATH or /usr/games/stockfish)')
     _default_be = os.path.join(os.path.dirname(__file__), 'BayesElo', 'bayeselo')
     p.add_argument('--bayeselo',  default=_default_be,      help='BayesElo binary')
     p.add_argument('--games',     type=int,   default=50,   help='Total games (split evenly per colour)')
