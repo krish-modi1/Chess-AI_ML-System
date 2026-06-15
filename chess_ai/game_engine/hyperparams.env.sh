@@ -77,8 +77,9 @@ export TRAIN_DL_WORKERS=16
 export TRAIN_DL_PREFETCH=4   # batches buffered per worker (local launchers set 1)
 
 # Loop / eval / rules — identical on all platforms.
-export SIMULATIONS=1200        # was 800 — deeper search = stronger MCTS targets (policy-improvement
-                              # operator) to break the ~1524 plateau. ~1.5× slower self-play.
+export SIMULATIONS=1600        # 1200→1600 for the 25% FULL (recorded) searches — sharper policy targets
+                              # to re-open the search-vs-net gap (search_probe was in "bump sims" regime:
+                              # KL 0.6, Δentropy≈0). Only ~8% slower self-play (playout-cap: 75% stay fast).
 export EVAL_SIMULATIONS=800   # kept at 800 so arena/Stockfish-Elo stay comparable to the 1524 anchor
 
 # KataGo-style decided-game playout: once |P(win)-P(loss)| >= threshold for N consecutive
