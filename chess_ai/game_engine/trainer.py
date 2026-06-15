@@ -425,8 +425,14 @@ def train_model(data_path="data/self_play",
     # scheduler.step() is called once per batch. A training phase runs epochs × (all chunks),
     # so batches_per_epoch sums every chunk's batch count; T_max must include the epochs factor
     # or the cosine completes its half-period ~epochs× too early (CosineAnnealingLR is periodic).
-    batches_per_epoch = sum(max(1, (sum(n for _, n in ch) + batch_size - 1) // batch_size)
-                            for ch in train_chunks)
+    # Single-chunk: the loader is already built, so use its REAL (post-subsample) batch count —
+    # the pre-subsample plan over-counts ~5× (e.g. 152 vs ~30) and stalls the tqdm bar. Multi-chunk:
+    # chunks are built lazily (memory), so fall back to the pre-subsample estimate.
+    if not multi_chunk and train_dataloader is not None:
+        batches_per_epoch = len(train_dataloader)
+    else:
+        batches_per_epoch = sum(max(1, (sum(n for _, n in ch) + batch_size - 1) // batch_size)
+                                for ch in train_chunks)
     total_steps = total_iterations * epochs * max(batches_per_epoch, 1)
     scheduler = CosineAnnealingLR(optimizer, T_max=max(total_steps, 1), eta_min=1e-6)
 
@@ -451,13 +457,21 @@ def train_model(data_path="data/self_play",
 
     # ── Header ─────────────────────────────────────────────────────────────────
     n_val_batches = len(val_dataloader) if val_dataloader is not None else 0
+    # Show the ACTUAL trained (post-subsample) counts — consistent with the batch counts. Single-chunk
+    # uses the real dataset length; multi-chunk marks a '~' pre-subsample estimate (built lazily).
+    if not multi_chunk and train_dataset is not None:
+        n_train_trained, train_est = len(train_dataset), ""
+    else:
+        n_train_trained, train_est = n_train_pos, "~"
+    n_val_trained = len(val_dataset)
     sep = '─' * 86
     print(f"\n{'═'*86}")
     print(f"  RL Training  |  {epochs} epochs  |  batch={batch_size}"
-          f"  |  {n_train_pos} train / {n_val_pos} val positions"
-          f"  |  value_weight={VALUE_LOSS_WEIGHT}")
+          f"  |  trained: {train_est}{n_train_trained:,} train / {n_val_trained:,} val (post-subsample)"
+          f"  |  base={os.path.basename(input_model_path)}")
     print(f"  {batches_per_epoch} train batches/ep  |  {n_val_batches} val batches/ep"
-          f"  |  {num_dl_workers} workers ×{dl_prefetch} prefetch  |  {len(train_chunks)} chunk(s)")
+          f"  |  {num_dl_workers}w×{dl_prefetch}pf  |  KL-anchor β={KL_ANCHOR_BETA}"
+          f"  |  aux m/p/r={AUX_W_MAT}/{AUX_W_PLIES}/{AUX_W_REPLY}  |  {len(train_chunks)} chunk(s)")
     print(f"{'═'*86}")
     print(f"{'Ep':>6}  {'Tr-P':>7}  {'Tr-V':>7}  {'Va-P':>7}  {'Va-V':>7}"
           f"  {'Tr-Acc':>7}  {'Va-Acc':>7}  {'GNorm':>7}  {'LR':>10}  {'Time':>5}")
