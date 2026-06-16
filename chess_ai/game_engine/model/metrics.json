@@ -163,17 +163,5 @@
     "value_acc_gap": 0,
     "search_kl": 0.555,
     "search_override": 89.1
-  },
-  {
-    "iteration": 16,
-    "timestamp": "2026-06-15T14:12:10.189076",
-    "event": "rollback_to_iter3",
-    "note": "Champion reset to best_model_iter3.bak (1524 peak) after self-play lineage cycled 1390->1294->1222. Protective config: PROMOTION_WIN_RATE=0.55, TRAIN_FROM_LINEAGE=0, STOCKFISH_ELO=1320, AUX_W_MAT=1.0.",
-    "policy_loss": null,
-    "value_loss": null,
-    "arena_win_rate": null,
-    "model_elo": 1524.0,
-    "elo_measured": true,
-    "stockfish_elo": 1800
   }
 ]
