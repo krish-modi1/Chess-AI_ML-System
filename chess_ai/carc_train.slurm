@@ -47,9 +47,9 @@ echo "============================================================"
 # 1. Modules  (verify exact strings once with: module avail gcc python cmake)
 # ---------------------------------------------------------------------------
 module purge
-module load gcc/11.3.0    || module load gcc
-module load python/3.11.3 || module load python
-module load cmake         || true
+module load gcc/13.3.0
+module load python/3.11.9
+module load cmake/3.29.4
 export PATH="$HOME/.local/bin:$PATH"      # pip --user scripts + stockfish live here
 
 # ---------------------------------------------------------------------------
