@@ -64,25 +64,25 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Stockfish → ~/.local/bin (official prebuilt static binary; no apt/conda)
+# 3. Stockfish → BUILD FROM SOURCE into ~/.local/bin.
+#    The official prebuilt "ubuntu" binaries need glibc >=2.29; CARC (Rocky 8)
+#    has glibc 2.28, so we compile against the node's toolchain (gcc module).
+#    Builds under $HOME (avoids any noexec /tmp); NNUE net is embedded.
 # ---------------------------------------------------------------------------
-if ! command -v stockfish >/dev/null 2>&1; then
-  echo "[sf] downloading Stockfish ..."
+if [[ ! -x "$HOME/.local/bin/stockfish" ]]; then
+  echo "[sf] building Stockfish from source ..."
   mkdir -p "$HOME/.local/bin"
-  TMP="$(mktemp -d)"
-  for variant in avx2 sse41-popcnt; do
-    url="https://github.com/official-stockfish/Stockfish/releases/download/sf_16.1/stockfish-ubuntu-x86-64-${variant}.tar"
-    if curl -fSL --retry 3 -o "$TMP/sf.tar" "$url"; then
-      tar xf "$TMP/sf.tar" -C "$TMP"
-      bin="$(find "$TMP" -type f -name 'stockfish-ubuntu-*' | head -1)"
-      chmod +x "$bin"
-      if echo quit | "$bin" >/dev/null 2>&1; then
-        cp "$bin" "$HOME/.local/bin/stockfish"; chmod +x "$HOME/.local/bin/stockfish"
-        echo "[sf] installed ($variant)"; break
-      fi
-    fi
-  done
-  rm -rf "$TMP"
+  SFB="$(mktemp -d -p "$HOME")"
+  curl -fSL --retry 3 -o "$SFB/sf.tgz" \
+    "https://github.com/official-stockfish/Stockfish/archive/refs/tags/sf_16.1.tar.gz"
+  tar xzf "$SFB/sf.tgz" -C "$SFB"
+  ( cd "$SFB"/Stockfish-*/src && make -j"$(nproc)" build ARCH=x86-64-sse41-popcnt )
+  cp "$SFB"/Stockfish-*/src/stockfish "$HOME/.local/bin/stockfish"
+  chmod +x "$HOME/.local/bin/stockfish"
+  rm -rf "$SFB"
+  echo "[sf] built → $HOME/.local/bin/stockfish"
+else
+  echo "[sf] stockfish present — skipping build."
 fi
 export STOCKFISH_PATH="$(command -v stockfish || echo "$HOME/.local/bin/stockfish")"
 
