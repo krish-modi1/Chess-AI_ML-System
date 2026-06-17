@@ -1,5 +1,0 @@
-  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
-                                 Dload  Upload   Total   Spent    Left  Speed
-  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
-  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100  172k    0  172k    0     0   310k      0 --:--:-- --:--:-- --:--:-- 1660k
-/home1/krishmod/Chess-AI_ML-System/chess_ai/game_engine/hyperparams.env.sh: line 49: VRAM_MIB: unbound variable
