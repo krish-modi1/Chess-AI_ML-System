@@ -18,8 +18,8 @@
 #SBATCH --account=saifhash_1190         # CARC project allocation
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:a100:1               # or gpu:1 / gpu:a40:1  (check: sinfo -o "%P %G")
-#SBATCH --cpus-per-task=16              # self-play CPU workers scale to this
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=48              # self-play CPU workers + training dataloaders scale to this
+#SBATCH --mem=128G
 #SBATCH --time=24:00:00                 # generous for 3 iters; raise to partition max if needed
 #SBATCH --signal=B:TERM@300             # SIGTERM 300s before time limit → graceful save
 #SBATCH --output=chess_ai/logs/carc_%x_%j.out
@@ -144,8 +144,25 @@ echo "[verify] mcts_engine_cpp import OK"
 # ---------------------------------------------------------------------------
 # 6. Hyperparameters + cap this job to 3 fresh iterations (from run_state.json)
 # ---------------------------------------------------------------------------
+# hyperparams.env.sh needs these set BEFORE sourcing (VRAM tier + worker counts).
+export NCPU="$(nproc)"
+export VRAM_MIB="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | tr -d ' ')"
 set -a; source "$GAME/hyperparams.env.sh"; set +a
 export PYTHONPATH="$GAME${PYTHONPATH:+:$PYTHONPATH}"
+
+# A100-80GB overrides (after sourcing so they win over hyperparams defaults):
+# bigger training batches + more dataloaders/prefetch (4× the VRAM of the L4 these defaults were sized for).
+export TRAIN_BATCH_SIZE=4096
+export TRAIN_DL_WORKERS=32
+export TRAIN_DL_PREFETCH=8
+
+# Self-play scaling for the 48-core / A100-80GB node. NUM_WORKERS overrides hyperparams'
+# hard-coded 60; CUDA_BATCH_SIZE MUST be recomputed to NUM_WORKERS×WORKER_BATCH_SIZE (capped
+# by VRAM_CAP) or the inference server stalls 1s/round. 92×10 games = 920 games/iter.
+export NUM_WORKERS=92
+CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))
+(( CUDA_BATCH_SIZE > VRAM_CAP )) && CUDA_BATCH_SIZE=$VRAM_CAP
+export CUDA_BATCH_SIZE
 
 START_ITER=$(python3 - "$CHESS_AI" <<'PY'
 import json, os, sys
