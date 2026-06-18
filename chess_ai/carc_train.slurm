@@ -188,6 +188,23 @@ echo "[run] resuming at iter $START_ITER → through iter $ITERATIONS ($ITERS_PE
 #    Forward SLURM's SIGTERM to python for graceful phase-resume.
 # ---------------------------------------------------------------------------
 cd "$CHESS_AI"
+
+# Background resource sampler for next-run tuning. Every 60s, across all 3 phases:
+# GPU util %, GPU mem used (MiB), 1-min load avg, live python-process count.
+# Prints '[usage] ...' to the SLURM .out (grep it) AND a clean CSV at logs/usage_<jobid>.csv.
+USAGE_CSV="$CHESS_AI/logs/usage_${SLURM_JOB_ID:-local}.csv"
+echo "time,gpu_util_pct,gpu_mem_MiB,load_1min,py_procs" > "$USAGE_CSV"
+( while true; do
+    g=$(nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+    load=$(awk '{print $1}' /proc/loadavg 2>/dev/null)
+    npy=$(pgrep -u "$(id -un)" -fc python 2>/dev/null || echo 0)
+    line="$(date +%T),${g:-NA},${load:-NA},${npy:-0}"
+    echo "$line" >> "$USAGE_CSV"
+    echo "[usage] $line"
+    sleep 60
+  done ) &
+SAMPLER_PID=$!
+
 python3 -m game_engine.main &
 PID=$!
 graceful() { echo "[run] SIGTERM (time limit) → graceful stop"; kill -TERM "$PID" 2>/dev/null || true; }
@@ -195,4 +212,5 @@ trap graceful TERM
 set +e
 wait "$PID"
 while kill -0 "$PID" 2>/dev/null; do sleep 5; done
+kill "$SAMPLER_PID" 2>/dev/null
 echo "[run] python finished at $(date)"
