@@ -508,6 +508,11 @@ STOCKFISH_GAMES = int(os.environ.get("STOCKFISH_GAMES", 20))
 # EVAL_WORKERS. Falls back to EVAL_WORKERS if unset.
 STOCKFISH_WORKERS = int(os.environ.get("STOCKFISH_WORKERS", EVAL_WORKERS))
 STOCKFISH_ELO = int(os.environ.get("STOCKFISH_ELO", 1320))
+# Stockfish move budget: fixed NODES (reproducible across machines/versions) when >0, else the
+# legacy wall-time (0.1s, CPU-dependent). Set to the A_low anchor (anchors.json: 100000) so the
+# loop's per-iter Elo lands on the SAME scale as the round-robin ladder. UCI_Elo limiting still
+# applies on top (skill cap), so this just fixes the search budget reproducibly.
+STOCKFISH_NODES = int(os.environ.get("STOCKFISH_NODES", "0"))
 # Measure the CANDIDATE's Elo vs Stockfish EVERY iteration (not just on promotion) — an absolute-
 # strength trend independent of the promotion gate, so we can see if the loop is climbing even when
 # nothing promotes. Default on.
@@ -591,7 +596,9 @@ def run_stockfish_server_worker(worker_id, in_q, out_q, n_games, stockfish_path,
                 if is_agent:
                     mv, _ = worker.search(game, temperature=0.0, history=list(history), use_dirichlet=False)
                 else:
-                    mv = engine.play(game.board, chess.engine.Limit(time=0.1)).move.uci()
+                    _sf_limit = chess.engine.Limit(nodes=STOCKFISH_NODES) if STOCKFISH_NODES > 0 \
+                        else chess.engine.Limit(time=0.1)
+                    mv = engine.play(game.board, _sf_limit).move.uci()
                 if mv is None:
                     break
                 worker.advance_root(mv)

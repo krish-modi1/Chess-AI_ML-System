@@ -1,0 +1,48 @@
+{
+  "_doc": "FROZEN Elo anchor definition for the training loop. The 1524-vs-846 drift was caused by DIFFERENT Stockfish binaries; pinning the binary + using fixed NODES (not wall-time) makes every anchor bit-identical on any machine. Do not change these values once games have been rated against them — add new higher anchors instead.",
+  "sf_version": "sf_16.1",
+  "sf_build": "compiled from source, tag sf_16.1, ARCH=x86-64-sse41-popcnt (same binary local + CARC)",
+  "scale_pin": "A_low == 1320 (defined); all other Elos are relative to it via BayesElo",
+
+  "anchors": {
+    "A_low": {
+      "role": "low bracket + SCALE PIN",
+      "uci_limitstrength": true,
+      "uci_elo": 1320,
+      "nodes": 100000,
+      "elo": 1320,
+      "fixed": true
+    },
+    "A_high": {
+      "role": "high bracket (brackets the ~1638 pretrained net from above)",
+      "uci_limitstrength": false,
+      "nodes": null,
+      "elo": null,
+      "fixed": false,
+      "_calibrate": "Pick the node count whose strength is ~1700 (so pretrained ~1638 scores ~45%). Run a >=100-game A_low<->A_high round-robin, set elo via BayesElo with A_low pinned=1320, then FREEZE both nodes and elo. (Preliminary: nodes=1 ~1688, but noisy; calibrate 1/64/256/1024 and pick the cleanest ~1700.)"
+    },
+    "A_2000": {
+      "role": "FUTURE headroom (add only when the model exceeds ~1700)",
+      "uci_limitstrength": false,
+      "nodes": null,
+      "elo": null,
+      "fixed": false,
+      "_calibrate": "node count calibrated to ~2000 vs the frozen A_low/A_high; never moves the existing anchors."
+    }
+  },
+
+  "model_eval_protocol": {
+    "mcts_sims": 800,
+    "temperature": 0,
+    "balanced_colors": true,
+    "games_per_pairing": 100,
+    "rating_engine": "bundled BayesElo (chess_ai/BayesElo/bayeselo)",
+    "rating_anchor": "A_low = 1320 pinned",
+    "rule": "measure each model against the bracketing anchor(s) where it scores 30-70% (tightest CI)"
+  },
+
+  "preliminary_12game_ratings_sf1320": {
+    "_note": "From the 12-game probes (wide +-90 CI, overlapping). NOT final; superseded once the 100-game round-robin runs.",
+    "pretrained": 1638, "iter18_candidate": 1554, "iter3_bak": 1452, "best_model_1222era": 1376
+  }
+}

@@ -142,6 +142,21 @@ python3 -c "import sys; sys.path.insert(0,'$GAME'); import mcts_engine_cpp" \
 echo "[verify] mcts_engine_cpp import OK"
 
 # ---------------------------------------------------------------------------
+# 5b. BayesElo — the committed binary needs glibc >=2.34; Rocky 8 has 2.28, so
+#     rebuild it from the in-repo source if it can't run here (else Stockfish
+#     Elo silently fails to parse). Unity build: g++ on bayeselo.cpp alone.
+# ---------------------------------------------------------------------------
+if ! echo quit | "$CHESS_AI/BayesElo/bayeselo" >/dev/null 2>&1; then
+  echo "[bayeselo] committed binary won't run here — rebuilding from source ..."
+  ( cd "$CHESS_AI/BayesElo" && g++ -O3 -Wall -o bayeselo bayeselo.cpp )
+  echo quit | "$CHESS_AI/BayesElo/bayeselo" >/dev/null 2>&1 \
+    && echo "[bayeselo] rebuilt OK" \
+    || echo "[bayeselo] rebuild FAILED — Stockfish Elo won't compute" >&2
+else
+  echo "[bayeselo] binary runs — OK."
+fi
+
+# ---------------------------------------------------------------------------
 # 6. Hyperparameters + cap this job to 3 fresh iterations (from run_state.json)
 # ---------------------------------------------------------------------------
 # hyperparams.env.sh needs these set BEFORE sourcing (VRAM tier + worker counts).
@@ -174,7 +189,10 @@ export STOCKFISH_GAMES=184
 # pre-rollback ghost — this seeds a real SF-1600 Elo trend). SF-1600 ≈ the model's strength → scores
 # land near 50% → most sensitive BayesElo estimate.
 export STOCKFISH_EVERY_ITER=1
-export STOCKFISH_ELO=1600
+# A_low anchor (anchors.json): UCI_Elo 1320 + fixed nodes 100000 → per-iter Elo on the SAME
+# reproducible scale as the round-robin ladder. SF-1600 was the noise floor (model scored 0.5%).
+export STOCKFISH_ELO=1320
+export STOCKFISH_NODES=100000
 
 START_ITER=$(python3 - "$CHESS_AI" <<'PY'
 import json, os, sys
@@ -193,6 +211,14 @@ PY
 )
 export ITERATIONS=$(( START_ITER + ITERS_PER_JOB - 1 ))
 echo "[run] resuming at iter $START_ITER → through iter $ITERATIONS ($ITERS_PER_JOB iters this job)"
+
+# ---------------------------------------------------------------------------
+# Raise the open-file limit. 92 workers × 2 arena servers × (queues + semaphores + SHM) exhaust
+# the default (~1024) and FDs accumulate across iterations — job 9511845 died at iter-21 arena
+# with "[Errno 24] Too many open files" → server deadlock. Set to the hard max for headroom.
+# ---------------------------------------------------------------------------
+ulimit -n 1048576 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
+echo "[fd] open-files limit = $(ulimit -n)"
 
 # ---------------------------------------------------------------------------
 # 7. Run the loop EXACTLY as GCP did (cwd=chess_ai → Logger writes

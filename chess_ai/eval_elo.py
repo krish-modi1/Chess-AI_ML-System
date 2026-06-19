@@ -40,7 +40,13 @@ def load_model(path, device):
     # torch.compile() wraps keys with '_orig_mod.' — strip it for inference
     if any(k.startswith('_orig_mod.') for k in state):
         state = {k.removeprefix('_orig_mod.'): v for k, v in state.items()}
-    model.load_state_dict(state)
+    # strict=False: older checkpoints (e.g. the original pretrained net) predate the training-only
+    # aux heads (material/plies/reply); those are unused at inference (policy+value only).
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    aux = {"material_head", "plies_head", "reply_head"}
+    real_missing = [k for k in missing if k.split(".")[0] not in aux]
+    if real_missing or unexpected:
+        print(f"[load] WARNING missing={real_missing[:4]} unexpected={list(unexpected)[:4]}")
     model.eval()
     return model.to(device)
 

@@ -1,0 +1,32 @@
+{
+  "type": "elo_recalibration",
+  "date": "2026-06-18",
+  "anchor": "Stockfish UCI_Elo 1320 (local SF 16), 800 MCTS sims, 12 games each, bundled BayesElo",
+  "note": "Consistent re-rating. The per-iteration model_elo column above is SF-1800-anchored and version/machine-dependent (CCRL-scaled UCI_Elo) -> NOT comparable across runs. These four are mutually consistent (same binary, same session). 12 games => +-~90 Elo CI, heavily overlapping in the middle: only pretrained>1222-era-net is statistically clear. Re-run at >=100 games to rank iter3/iter18/pretrained. The historical '1524->1222 collapse' was largely anchor noise (true spread ~260 Elo with big error bars).",
+  "ratings_sf1320": {
+    "pretrained": {
+      "elo": 1638,
+      "ci": 101,
+      "score": 0.96,
+      "record": "11W-1D-0L"
+    },
+    "iter18_candidate": {
+      "elo": 1554,
+      "ci": 93,
+      "score": 0.83,
+      "record": "10W-0D-2L"
+    },
+    "iter3_bak": {
+      "elo": 1452,
+      "ci": 92,
+      "score": 0.7,
+      "record": "7W-0D-3L"
+    },
+    "best_model_1222era": {
+      "elo": 1376,
+      "ci": 83,
+      "score": 0.58,
+      "record": "7W-0D-5L"
+    }
+  }
+}
