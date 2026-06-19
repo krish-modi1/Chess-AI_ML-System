@@ -20,13 +20,13 @@
 #SBATCH --gres=gpu:a100:1               # or gpu:1 / gpu:a40:1  (check: sinfo -o "%P %G")
 #SBATCH --cpus-per-task=48              # self-play CPU workers + training dataloaders scale to this
 #SBATCH --mem=128G
-#SBATCH --time=24:00:00                 # generous for 3 iters; raise to partition max if needed
+#SBATCH --time=14:00:00                 # generous for 3 iters; raise to partition max if needed
 #SBATCH --signal=B:TERM@300             # SIGTERM 300s before time limit → graceful save
 #SBATCH --output=chess_ai/logs/carc_%x_%j.out
 #SBATCH --error=chess_ai/logs/carc_%x_%j.err
 
 set -euo pipefail
-ITERS_PER_JOB=3
+ITERS_PER_JOB=5
 
 # ---------------------------------------------------------------------------
 # 0. Paths
@@ -170,6 +170,11 @@ export EVAL_WORKERS=92
 export GAMES_PER_EVAL_WORKER=2
 export STOCKFISH_WORKERS=92
 export STOCKFISH_GAMES=184
+# Measure absolute strength EVERY iter (free compute on CARC; the carried-forward 1222 is a stale
+# pre-rollback ghost — this seeds a real SF-1600 Elo trend). SF-1600 ≈ the model's strength → scores
+# land near 50% → most sensitive BayesElo estimate.
+export STOCKFISH_EVERY_ITER=1
+export STOCKFISH_ELO=1600
 
 START_ITER=$(python3 - "$CHESS_AI" <<'PY'
 import json, os, sys
