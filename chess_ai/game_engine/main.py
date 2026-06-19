@@ -1171,6 +1171,10 @@ if __name__ == "__main__":
     print("=" * 60)
 
     killer = GracefulKiller()
+
+    def _phase_dur(secs):
+        h, rem = divmod(secs, 3600); m, s = divmod(rem, 60)
+        return f"{int(h)}h {int(m)}m {s:.0f}s" if h >= 1 else f"{int(m)}m {s:.0f}s"
     
     try:
         for it in range(start_iter, ITERATIONS + 1):
@@ -1192,6 +1196,7 @@ if __name__ == "__main__":
                 print(f"\n{'='*60}")
                 print(f"ITERATION {it} - PHASE 1: SELF-PLAY")
                 print(f"{'='*60}")
+                _t_phase = time.time()
 
                 if RESUME_ITERATION is not None and it == RESUME_ITERATION:
                     print(f"⏭️  ITERATION {it} - SKIPPING SELF-PLAY (using existing data)")
@@ -1206,6 +1211,7 @@ if __name__ == "__main__":
                             print("[Main] Kill signal during Phase 1. Exiting...")
                             break
                         raise
+                print(f"⏱️  ITER {it} self-play took {_phase_dur(time.time() - _t_phase)}")
                 save_phase(it, "self_play")
 
             # CHECK AFTER PHASE 1
@@ -1226,6 +1232,7 @@ if __name__ == "__main__":
                 print(f"\n{'='*60}")
                 print(f"ITERATION {it} - PHASE 2: TRAINING")
                 print(f"{'='*60}")
+                _t_phase = time.time()
 
                 try:
                     p_loss, v_loss = run_training_phase(it)
@@ -1236,6 +1243,7 @@ if __name__ == "__main__":
                         print("[Main] Kill signal during Phase 2. Exiting...")
                         break
                     raise
+                print(f"⏱️  ITER {it} training took {_phase_dur(time.time() - _t_phase)}")
                 save_phase(it, "training")
 
             # CHECK AFTER PHASE 2
@@ -1246,6 +1254,7 @@ if __name__ == "__main__":
 
             # === PHASE 3: EVALUATION ===
             if resume_phase <= 3 and do_train:
+                _t_phase = time.time()
                 if SKIP_EVAL:
                     print(f"\n{'='*60}")
                     print(f"ITERATION {it} - PHASE 3: EVALUATION SKIPPED (SKIP_EVAL=1)")
@@ -1264,6 +1273,7 @@ if __name__ == "__main__":
                             print("[Main] Kill signal during Phase 3. Exiting...")
                             break
                         raise
+                print(f"⏱️  ITER {it} evaluation took {_phase_dur(time.time() - _t_phase)}")
                 save_phase(it, "eval")
             
             # === ITERATION COMPLETE ===
