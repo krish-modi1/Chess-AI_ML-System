@@ -1,0 +1,14 @@
+
+[notice] A new release of pip is available: 24.0 -> 26.1.2
+[notice] To update, run: python3 -m pip install --upgrade pip
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+ 41 67.0M   41 27.9M    0     0  47.8M      0  0:00:01 --:--:--  0:00:01 47.8M100 67.0M  100 67.0M    0     0  60.6M      0  0:00:01  0:00:01 --:--:-- 75.0M
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+  0 67.0M    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0 58 67.0M   58 38.9M    0     0  27.7M      0  0:00:02  0:00:01  0:00:01 39.3M100 67.0M  100 67.0M    0     0  31.4M      0  0:00:02  0:00:02 --:--:-- 39.0M
+VERIFY FAILED:
+  - stockfish run: [Errno 2] No such file or directory: '/home1/krishmod/.local/bin/stockfish'
+[verify] FAILED — see errors above; aborting job.

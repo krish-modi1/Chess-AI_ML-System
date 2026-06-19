@@ -1,0 +1,115 @@
+==========================================
+SLURM_JOB_ID = 9447205
+SLURM_JOB_NODELIST = b05-14
+TMPDIR = /tmp/SLURM_9447205
+==========================================
+============================================================
+ CARC AlphaZero job  |  Tue Jun 16 16:46:58 PDT 2026
+ Node: b05-14.hpc.usc.edu   |  Job: 9447205
+NVIDIA A100 80GB PCIe, 81920 MiB
+============================================================
+[deps] python packages already present — skipping pip.
+[sf] building Stockfish from source ...
+Default net: nn-b1a57edbea57.nnue
+Downloading https://tests.stockfishchess.org/api/nn/nn-b1a57edbea57.nnue
+nn-b1a57edbea57.nnue available : OK
+Network validated
+Default net: nn-baff1ede1f90.nnue
+Downloading https://tests.stockfishchess.org/api/nn/nn-baff1ede1f90.nnue
+nn-baff1ede1f90.nnue available : OK
+Network validated
+
+Config:
+debug: 'no'
+sanitize: 'none'
+optimize: 'yes'
+arch: 'x86_64'
+bits: '64'
+kernel: 'Linux'
+os: 'GNU/Linux'
+prefetch: 'yes'
+popcnt: 'yes'
+pext: 'no'
+sse: 'yes'
+mmx: 'no'
+sse2: 'yes'
+ssse3: 'yes'
+sse41: 'yes'
+avx2: 'no'
+avxvnni: 'no'
+avx512: 'no'
+vnni256: 'no'
+vnni512: 'no'
+neon: 'no'
+dotprod: 'no'
+arm_version: '0'
+target_windows: ''
+
+Flags:
+CXX: g++
+CXXFLAGS:  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one
+LDFLAGS:   -m64 -Wl,--no-as-needed -lpthread  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one -flto=jobserver
+
+Testing config sanity. If this fails, try 'make help' ...
+
+make ARCH=x86-64-sse41-popcnt COMP=gcc all
+make[1]: Entering directory '/home1/krishmod/tmp.OYLbdR8Y70/Stockfish-sf_16.1/src'
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o benchmark.o benchmark.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o bitboard.o bitboard.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o evaluate.o evaluate.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o main.o main.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o misc.o misc.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o movegen.o movegen.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o movepick.o movepick.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o position.o position.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o search.o search.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o thread.o thread.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o timeman.o timeman.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o tt.o tt.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o uci.o uci.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o ucioption.o ucioption.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o tune.o tune.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o tbprobe.o syzygy/tbprobe.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o evaluate_nnue.o nnue/evaluate_nnue.cpp
+g++  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one   -c -o half_ka_v2_hm.o nnue/features/half_ka_v2_hm.cpp
+g++ -o stockfish benchmark.o bitboard.o evaluate.o main.o misc.o movegen.o movepick.o position.o search.o thread.o timeman.o tt.o uci.o ucioption.o tune.o tbprobe.o evaluate_nnue.o half_ka_v2_hm.o   -m64 -Wl,--no-as-needed -lpthread  -Wall -Wcast-qual -fno-exceptions -std=c++17  -pedantic -Wextra -Wshadow -Wmissing-declarations -m64 -DUSE_PTHREADS -DNDEBUG -O3 -funroll-loops -DIS_64BIT -msse -msse3 -mpopcnt -DUSE_POPCNT -DUSE_SSE41 -msse4.1 -DUSE_SSSE3 -mssse3 -DUSE_SSE2 -msse2 -DARCH=x86-64-sse41-popcnt -flto -flto-partition=one -flto=jobserver
+make[1]: Leaving directory '/home1/krishmod/tmp.OYLbdR8Y70/Stockfish-sf_16.1/src'
+[sf] built → /home1/krishmod/.local/bin/stockfish
+[verify] checking environment ...
+[verify] torch 2.12.0+cu126  cuda_build=12.6  cuda_avail=True
+[verify] stockfish OK (/home1/krishmod/.local/bin/stockfish)
+[verify] python deps + cuda + stockfish OK
+[build] compiling mcts_engine_cpp ...
+-- The C compiler identification is GNU 13.3.0
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /apps/generic/gcc/13.3.0/bin/gcc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /apps/generic/gcc/13.3.0/bin/g++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found pybind11 at: /home1/krishmod/.local/lib/python3.11/site-packages/pybind11/share/cmake/pybind11
+-- Found Python3: /apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 (found version "3.11.9") found components: Interpreter Development Development.Module Development.Embed
+-- Performing Test HAS_FLTO_AUTO
+-- Performing Test HAS_FLTO_AUTO - Success
+-- Found pybind11: /home1/krishmod/.local/lib/python3.11/site-packages/pybind11/include (found version "3.0.4")
+-- MCTS C++ Engine Build Configuration:
+--   Build Type: Release
+--   C++ Standard: 17
+--   Python: /apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3
+--   pybind11: /home1/krishmod/.local/lib/python3.11/site-packages/pybind11/share/cmake/pybind11
+--   Source files: src/mcts_engine.cpp, src/python_bridge.cpp
+-- Configuring done (1.3s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home1/krishmod/Chess-AI_ML-System/chess_ai/game_engine/build
+[ 50%] Building CXX object CMakeFiles/mcts_engine_cpp.dir/src/chess_board.cpp.o
+[ 50%] Building CXX object CMakeFiles/mcts_engine_cpp.dir/src/python_bridge.cpp.o
+[ 75%] Building CXX object CMakeFiles/mcts_engine_cpp.dir/src/mcts_engine.cpp.o
+[100%] Linking CXX shared module mcts_engine_cpp.cpython-311-x86_64-linux-gnu.so
+[100%] Built target mcts_engine_cpp
+[build] done.
+[verify] mcts_engine_cpp import OK
