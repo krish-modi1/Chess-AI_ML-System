@@ -673,7 +673,7 @@ def run_stockfish_eval_gpu(model_path, num_games, stockfish_path, sims, sf_elo, 
         print("❌ All Stockfish eval games failed")
         return None
 
-    w = l = d = 0
+    w = l = d = fd = 0
     parts = []
     for r in sorted(results, key=lambda x: x["game_id"]):
         parts.append(r["pgn_str"]); res = r["result"]; aw = r["agent_is_white"]
@@ -683,19 +683,23 @@ def run_stockfish_eval_gpu(model_path, num_games, stockfish_path, sims, sf_elo, 
         elif res == "0-1":
             if aw: l += 1
             else:  w += 1
+        elif res == "*":
+            fd += 1            # reached the move cap w/o a decisive result = forced draw (matches arena)
         else:
             d += 1
 
     os.makedirs(os.path.dirname(pgn_path), exist_ok=True)
     with open(pgn_path, "w") as f:
         f.write("".join(parts))
-    print(f"  Saved {len(results)} games to {pgn_path}  (W{w}/D{d}/L{l})")
+    print(f"  Saved {len(results)} games to {pgn_path}  (W{w}/D{d}/FD{fd}/L{l})")
 
     runner = BayesEloRunner(stockfish_elo=sf_elo)
     res = runner.run(pgn_path)
     if res:
         res['win_count'] = w; res['loss_count'] = l; res['draw_count'] = d
-        res['total_games'] = len(results); res['win_rate'] = w / len(results) if results else 0.0
+        res['forced_draw_count'] = fd
+        res['total_games'] = len(results)
+        res['win_rate'] = (w + 0.5 * d + 0.5 * fd) / len(results) if results else 0.0
     return res
 
 
@@ -1134,8 +1138,12 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss):
             )
             if bayeselo_results:
                 est_elo = bayeselo_results['model_elo']
+                sf_w = bayeselo_results['win_count']; sf_d = bayeselo_results['draw_count']
+                sf_fd = bayeselo_results.get('forced_draw_count', 0); sf_l = bayeselo_results['loss_count']
+                sf_total = sf_w + sf_d + sf_fd + sf_l
+                sf_wr = (sf_w + 0.5 * sf_fd + 0.5 * sf_d) / sf_total if sf_total > 0 else 0
+                print(f" [Stockfish] Final Result: {sf_wr*100:.1f}% Win Rate ({sf_w}W - {sf_d}D - {sf_fd}FD - {sf_l}L)")
                 print(f" [BayesElo] ✅ {tag.capitalize()} Elo: {est_elo:.0f}")
-                print(f" [BayesElo] Record: {bayeselo_results['win_count']}-{bayeselo_results['draw_count']}-{bayeselo_results['loss_count']}")
             else:
                 print(f" [BayesElo] ❌ Failed to compute")
         except Exception as e:

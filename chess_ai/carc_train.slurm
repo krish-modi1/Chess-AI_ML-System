@@ -164,6 +164,13 @@ CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))
 (( CUDA_BATCH_SIZE > VRAM_CAP )) && CUDA_BATCH_SIZE=$VRAM_CAP
 export CUDA_BATCH_SIZE
 
+# Eval scaling: 92 workers × 2 games = 184 games for BOTH arena and Stockfish (2/worker keeps
+# per-worker color balance: 1 White + 1 Black). 92 workers also matches CUDA_BATCH_SIZE (92×8=736).
+export EVAL_WORKERS=92
+export GAMES_PER_EVAL_WORKER=2
+export STOCKFISH_WORKERS=92
+export STOCKFISH_GAMES=184
+
 START_ITER=$(python3 - "$CHESS_AI" <<'PY'
 import json, os, sys
 data = os.path.join(sys.argv[1], "data", "self_play")
