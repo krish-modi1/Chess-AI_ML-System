@@ -208,6 +208,13 @@ echo "[8/9] Setting hyperparameters based on GPU VRAM (${VRAM_GB} GB)..."
 NCPU=$(nproc)
 source "$GAME_ENGINE_DIR/hyperparams.env.sh"
 
+# Optional per-platform override file, sourced AFTER hyperparams so its values WIN over the defaults.
+# run_aws.sh sets EXTRA_ENV to inject AWS/L4 config (eval workers, batch, anchor). No-op on GCP/local.
+if [[ -n "${EXTRA_ENV:-}" && -f "${EXTRA_ENV}" ]]; then
+  echo "  [env] sourcing overrides ← $EXTRA_ENV"
+  source "$EXTRA_ENV"
+fi
+
 # GPU tier label (display only).
 if   (( VRAM_MIB >= 35000 )); then GPU_TIER="A100"
 elif (( VRAM_MIB >= 20000 )); then GPU_TIER="A30/V100-32"
