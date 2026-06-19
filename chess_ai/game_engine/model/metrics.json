@@ -193,5 +193,20 @@
     "value_acc_gap": 1,
     "search_kl": 0.781,
     "search_override": 94.0
+  },
+  {
+    "iteration": 19,
+    "timestamp": "2026-06-18T23:23:47.813619",
+    "policy_loss": 3.8045239869286034,
+    "value_loss": 0.8647606267648584,
+    "arena_win_rate": 0.4943820224719101,
+    "model_elo": 1222.0,
+    "elo_measured": false,
+    "stockfish_elo": 1600,
+    "value_acc_cand": 60,
+    "value_acc_champ": 59,
+    "value_acc_gap": 1,
+    "search_kl": 0.767,
+    "search_override": 94.3
   }
 ]
