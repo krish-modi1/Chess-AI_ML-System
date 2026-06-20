@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run_aws.sh — cloud launcher (Vast/AWS). Wraps run_gcp.sh and injects the box config via EXTRA_ENV
-# (sourced AFTER hyperparams so it wins), plus a raised FD limit. Current target: Vast RTX 4090-48GB,
+# (sourced AFTER hyperparams so it wins), plus a raised FD limit. Current target: Vast RTX 4090-24GB,
 # 64-core EPYC, cu126 torch (Ada — no Blackwell/cu128 dance). Run from the repo root:
 #   bash chess_ai/game_engine/run_aws.sh --background
 set -euo pipefail
@@ -9,19 +9,16 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # --- Vast 4090-48GB / 64-core config (sourced after hyperparams via the EXTRA_ENV hook) ---
 OVR="$HERE/.aws_overrides.env.sh"
 cat > "$OVR" <<'ENV'
-# Self-play: 240 workers × 10 games = 2400 games/iter (GAMES_PER_WORKER=10 from hyperparams).
-#   Workers spend ~all their time BLOCKED on the inference round-trip (~100ms), so at 120 workers the
-#   64-core box sat at load ~9 / GPU ~54% — badly under-fed. Over-subscribe ~4× so that while some
-#   workers wait, others compute and the GPU gets bigger/fuller batches. RESERVED_CORES=2 = dedicated
-#   server cores. CUDA_BATCH recomputes to 240×8=1920 (fine on 48GB). Push higher (300) if still idle.
-export NUM_WORKERS=240
+# Self-play: 120 workers on the 64-core box — the balanced point (empirically: 240 thrashed on context
+#   switches + single-server queue contention; 96 under-fed). CUDA_BATCH = 120×8 = 960 (fits 24GB).
+export NUM_WORKERS=120
 export RESERVED_CORES=2
 CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))
 (( CUDA_BATCH_SIZE > VRAM_CAP )) && CUDA_BATCH_SIZE=$VRAM_CAP
 export CUDA_BATCH_SIZE
 
-# Training: batch 4096 (48GB VRAM headroom — drop to 3072 if it ever OOMs), 32 DL workers × prefetch 2.
-export TRAIN_BATCH_SIZE=4096
+# Training: batch 2048 (fits 24GB — 4096 OOMs at ~22GB), 32 DL workers × prefetch 2.
+export TRAIN_BATCH_SIZE=2048
 export TRAIN_DL_WORKERS=32
 export TRAIN_DL_PREFETCH=2
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
