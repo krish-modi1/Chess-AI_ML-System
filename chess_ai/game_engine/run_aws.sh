@@ -22,6 +22,10 @@ export CUDA_BATCH_SIZE
 # distinct openings/2000 games (peaked g3 prior); a longer temp window widens the opening book.
 export TEMP_MOVES=16
 
+# Worker pacing: cap a fast worker to ≤3 games ahead of the slowest (was 5) — tighter spread so
+# fewer workers finish all 10 and idle while stragglers catch up = less tail-idle at iter end.
+export MAX_WORKER_LEAD=3
+
 # Training: batch 2048 (fits 24GB — 4096 OOMs at ~22GB), 32 DL workers × prefetch 2.
 export TRAIN_BATCH_SIZE=2048
 export TRAIN_DL_WORKERS=32
