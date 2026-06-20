@@ -27,13 +27,18 @@ from cnn import ChessCNN
 CLASS = {0: "win", 1: "draw", 2: "loss"}
 
 
+# Probes run BEFORE the arena (GPU is free), so use it when present — far faster than CPU on a
+# GPU server; falls back to CPU on CPU-only boxes.
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 def load(path):
     raw = torch.load(path, map_location="cpu", weights_only=False)
     sd = raw["model_state_dict"] if isinstance(raw, dict) and "model_state_dict" in raw else (
          raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw)
     sd = {k.removeprefix("_orig_mod."): v for k, v in sd.items()}
     m = ChessCNN().eval(); m.load_state_dict(sd, strict=False)   # tolerate pre-aux ckpts
-    return m
+    return m.to(DEVICE)
 
 
 def infer(model, x, bs=1024):
@@ -41,9 +46,9 @@ def infer(model, x, bs=1024):
     pol, val = [], []
     with torch.no_grad():
         for i in range(0, len(x), bs):
-            lg, v = model(x[i:i + bs])
-            pol.append(torch.softmax(lg, 1).numpy())
-            val.append(torch.softmax(v, -1).numpy())
+            lg, v = model(x[i:i + bs].to(DEVICE))
+            pol.append(torch.softmax(lg, 1).cpu().numpy())
+            val.append(torch.softmax(v, -1).cpu().numpy())
     return np.concatenate(pol), np.concatenate(val)
 
 

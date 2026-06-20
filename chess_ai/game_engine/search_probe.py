@@ -29,12 +29,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cnn import ChessCNN
 
 
+# Probes run BEFORE the arena (GPU free) → use it when present, else CPU. Dynamic check.
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 def load(path):
     raw = torch.load(path, map_location="cpu", weights_only=False)
     sd = raw["model_state_dict"] if isinstance(raw, dict) and "model_state_dict" in raw else raw
     sd = {k.removeprefix("_orig_mod."): v for k, v in sd.items()}
     m = ChessCNN().eval(); m.load_state_dict(sd, strict=False)   # tolerate pre-aux checkpoints
-    return m
+    return m.to(DEVICE)
 
 
 def latest_iter(data_dir):
@@ -62,9 +66,13 @@ def main():
     S = np.concatenate(S); P = np.concatenate(P)              # P = MCTS targets (sum to 1 over legal)
 
     model = load(a.model)
+    x = torch.from_numpy(S).float()
+    parts = []
     with torch.no_grad():
-        logits, _ = model(torch.from_numpy(S).float())
-    netp = torch.softmax(logits, 1).numpy()
+        for i in range(0, len(x), 1024):                 # batch so it fits any GPU
+            lg, _ = model(x[i:i + 1024].to(DEVICE))
+            parts.append(torch.softmax(lg, 1).cpu().numpy())
+    netp = np.concatenate(parts)
 
     agree = klsum = ent_m = ent_n = override = nlegal = 0.0
     valid = 0
