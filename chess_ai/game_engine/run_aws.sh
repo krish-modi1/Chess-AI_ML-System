@@ -31,6 +31,9 @@ export STOCKFISH_WORKERS=100
 export STOCKFISH_GAMES=200
 
 # A_low Elo anchor — fixed nodes → reproducible, same scale as the round-robin ladder.
+# Measure Elo EVERY iter (not just on promotion) — the absolute-strength trend is the scoreboard,
+# and nothing promotes during the plateau, so without this Stockfish would never run.
+export STOCKFISH_EVERY_ITER=1
 export STOCKFISH_ELO=1320
 export STOCKFISH_NODES=100000
 ENV
