@@ -129,8 +129,11 @@ echo "[4/9] Installing Python dependencies ($(python3 --version))..."
 
 PYTHON="$(which python3)"  # used only for cmake PYTHON3_EXE below
 
-pip3 install -q --break-system-packages \
-  -r "$(dirname "$CHESS_AI_DIR")/requirements.txt"
+# --break-system-packages is REQUIRED on PEP-668 systems (Ubuntu 24.04 / py3.12) but is an UNKNOWN
+# option on older pip (Ubuntu 22.04 / py3.10). Try with the flag, fall back without it.
+REQ="$(dirname "$CHESS_AI_DIR")/requirements.txt"
+pip3 install -q --break-system-packages -r "$REQ" 2>/dev/null \
+  || pip3 install -q -r "$REQ"
 echo "  pip install complete."
 
 # ──────────────────────────────────────────────────────────────────────────────
