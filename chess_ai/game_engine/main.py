@@ -647,8 +647,11 @@ def run_stockfish_eval_gpu(model_path, num_games, stockfish_path, sims, sf_elo, 
     per = [num_games // n_workers + (1 if i < num_games % n_workers else 0) for i in range(n_workers)]
 
     print(f"  Stockfish eval: model on GPU server + {n_workers} CPU-Stockfish workers ({num_games} games)")
+    # Size the server batch to THIS phase's worker count — self-play's CUDA_BATCH_SIZE oversizes it
+    # (the server then never fills a batch and only timeout-flushes). Matches self-play's invariant.
+    eval_cuda_batch = n_workers * WORKER_BATCH_SIZE
     server, sp, wq, (shm_inp, shm_pol, shm_val) = _start_inference_server(
-        model_path, n_workers, WORKER_BATCH_SIZE, CUDA_BATCH_SIZE, CUDA_STREAMS, CUDA_TIMEOUT_INFERENCE)
+        model_path, n_workers, WORKER_BATCH_SIZE, eval_cuda_batch, CUDA_STREAMS, CUDA_TIMEOUT_INFERENCE)
 
     result_q = mp.Queue()
     workers = []
@@ -809,10 +812,12 @@ def run_arena_eval_gpu(cand_model, champ_model, num_games, sims, max_moves):
     per = [num_games // n_workers + (1 if i < num_games % n_workers else 0) for i in range(n_workers)]
 
     print(f"  Arena: candidate + champion on 2 GPU servers, {n_workers} CPU workers ({num_games} games)")
+    # Size each server to THIS phase's worker count (self-play's CUDA_BATCH_SIZE oversizes it).
+    arena_cuda_batch = n_workers * WORKER_BATCH_SIZE
     cand_server, cand_sp, cand_wq, cand_shm = _start_inference_server(
-        cand_model, n_workers, WORKER_BATCH_SIZE, CUDA_BATCH_SIZE, CUDA_STREAMS, CUDA_TIMEOUT_INFERENCE)
+        cand_model, n_workers, WORKER_BATCH_SIZE, arena_cuda_batch, CUDA_STREAMS, CUDA_TIMEOUT_INFERENCE)
     champ_server, champ_sp, champ_wq, champ_shm = _start_inference_server(
-        champ_model, n_workers, WORKER_BATCH_SIZE, CUDA_BATCH_SIZE, CUDA_STREAMS, CUDA_TIMEOUT_INFERENCE)
+        champ_model, n_workers, WORKER_BATCH_SIZE, arena_cuda_batch, CUDA_STREAMS, CUDA_TIMEOUT_INFERENCE)
 
     result_q = mp.Queue()
     tally = mp.Array('i', 4)   # shared running [wins, draws, losses, forced_draws] across workers

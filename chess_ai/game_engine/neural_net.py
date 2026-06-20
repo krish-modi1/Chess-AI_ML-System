@@ -55,7 +55,12 @@ class InferenceServer:
                 with torch.no_grad():
                     pol_gpu, val_gpu = model(mega_gpu)
                 del mega_gpu
-            pol = pol_gpu.cpu()   # blocking — syncs the stream
+            # `stream` is a NON-default stream; the model ran on it. `.cpu()` below syncs the
+            # DEFAULT stream, NOT `stream`, so without this it can copy BEFORE the compute finishes
+            # → ~5% non-deterministic / wrong leaf evals (verified: self-inconsistent reads). Wait
+            # for the producing stream first.
+            stream.synchronize()
+            pol = pol_gpu.cpu()
             val = val_gpu.cpu()
             del pol_gpu, val_gpu
 
@@ -84,7 +89,7 @@ class InferenceServer:
                 policies_gpu, values_gpu = model(mega_batch_gpu)
             del mega_batch_gpu
 
-        # .cpu() is blocking — synchronizes the stream implicitly
+        stream.synchronize()   # same non-default-stream hazard as the SHM path: sync before .cpu()
         policies = policies_gpu.cpu().numpy()
         values = values_gpu.cpu().numpy()
         del policies_gpu, values_gpu
