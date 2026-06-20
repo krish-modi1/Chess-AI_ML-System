@@ -17,6 +17,11 @@ CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))
 (( CUDA_BATCH_SIZE > VRAM_CAP )) && CUDA_BATCH_SIZE=$VRAM_CAP
 export CUDA_BATCH_SIZE
 
+# Opening exploration: τ=1 sampling for the first 16 plies (hyperparams halved it to 8 "to stay
+# on-distribution" — a corrupted-era call, now retired). Restore 16: self-play funneled into ~7
+# distinct openings/2000 games (peaked g3 prior); a longer temp window widens the opening book.
+export TEMP_MOVES=16
+
 # Training: batch 2048 (fits 24GB — 4096 OOMs at ~22GB), 32 DL workers × prefetch 2.
 export TRAIN_BATCH_SIZE=2048
 export TRAIN_DL_WORKERS=32
