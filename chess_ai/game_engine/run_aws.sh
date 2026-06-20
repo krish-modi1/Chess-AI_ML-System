@@ -9,10 +9,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # --- Vast 4090-48GB / 64-core config (sourced after hyperparams via the EXTRA_ENV hook) ---
 OVR="$HERE/.aws_overrides.env.sh"
 cat > "$OVR" <<'ENV'
-# Self-play: 120 workers × 10 games = 1200 games/iter (GAMES_PER_WORKER=10 from hyperparams).
-#   64-core box → ~2× oversubscribe to hide inference round-trip latency; RESERVED_CORES=2 gives the
-#   GPU inference server 2 dedicated cores. CUDA_BATCH recomputed to 120×8=960 (trivial for 48GB).
-export NUM_WORKERS=120
+# Self-play: 240 workers × 10 games = 2400 games/iter (GAMES_PER_WORKER=10 from hyperparams).
+#   Workers spend ~all their time BLOCKED on the inference round-trip (~100ms), so at 120 workers the
+#   64-core box sat at load ~9 / GPU ~54% — badly under-fed. Over-subscribe ~4× so that while some
+#   workers wait, others compute and the GPU gets bigger/fuller batches. RESERVED_CORES=2 = dedicated
+#   server cores. CUDA_BATCH recomputes to 240×8=1920 (fine on 48GB). Push higher (300) if still idle.
+export NUM_WORKERS=240
 export RESERVED_CORES=2
 CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))
 (( CUDA_BATCH_SIZE > VRAM_CAP )) && CUDA_BATCH_SIZE=$VRAM_CAP
