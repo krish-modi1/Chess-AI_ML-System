@@ -27,6 +27,11 @@ class InferenceServer:
         self.input_queue = mp.Queue()
         self.output_queues = {}
 
+        # Batch-fill diagnostic (windowed): is the GPU starved by small batches or by gaps between
+        # full ones? avg fill ≈ cap + high hit-cap% → batches full, gather-bound (refactor). Low fill
+        # + low hit-cap% → timing out small, more workers / bigger timeout help.
+        self._dbg_n = self._dbg_fill = self._dbg_cap = 0
+
     def register_worker(self, worker_id):
         self.output_queues[worker_id] = mp.Queue()
         return self.output_queues[worker_id]
@@ -180,6 +185,17 @@ class InferenceServer:
                     break
 
             if batch_data:
+                # Windowed batch-fill diagnostic: avg leaves/batch + share that hit the cap (vs timed
+                # out below it). Prints every 200 dispatches to training_log.txt — grep '[server-batch]'.
+                self._dbg_n += 1
+                self._dbg_fill += current_batch_count
+                self._dbg_cap += 1 if current_batch_count >= self.batch_size else 0
+                if self._dbg_n >= 200:
+                    print(f"[server-batch] avg fill {self._dbg_fill // self._dbg_n}/{self.batch_size}  "
+                          f"hit-cap {100 * self._dbg_cap // self._dbg_n}%  "
+                          f"timeout {100 - 100 * self._dbg_cap // self._dbg_n}%", flush=True)
+                    self._dbg_n = self._dbg_fill = self._dbg_cap = 0
+
                 stream_idx = self.current_stream_idx
                 self.current_stream_idx = (self.current_stream_idx + 1) % self.num_streams
                 fut = executor.submit(self.process_batch, batch_data, stream_idx, model, self.device)

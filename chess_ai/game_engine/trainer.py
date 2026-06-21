@@ -291,7 +291,7 @@ def train_model(data_path="data/self_play",
     Trains the model on data from data_path.
     `anchor_model_path` is the FROZEN KL-anchor reference (pretrained); if None, the training base
     (input_model_path) is used — so train-from-lineage can evolve the base while the anchor stays pretrained.
-    Returns: (avg_policy_loss, avg_value_loss)
+    Returns: (train_policy_loss, train_value_loss, extra_metrics_dict)
     """
     warnings.filterwarnings('ignore')
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -302,7 +302,7 @@ def train_model(data_path="data/self_play",
     total_window = sum(n for _, n in plan)
     if total_window == 0:
         print("Skipping training (No Data).")
-        return 0.0, 0.0
+        return 0.0, 0.0, {}
 
     # Hold out ~10% of FILES as a disjoint val set. One .npz == one game, so a file-level split
     # IS a game-level split → no position from a val game leaks into train (honest val metrics).
@@ -337,7 +337,7 @@ def train_model(data_path="data/self_play",
         train_chunks.append(cur)
     if not train_chunks:
         print("Skipping training (no train files after val split).")
-        return 0.0, 0.0
+        return 0.0, 0.0, {}
     multi_chunk = len(train_chunks) > 1
     n_train_pos = sum(n for _, n in train_plan)
     n_val_pos   = sum(n for _, n in val_plan)
@@ -667,7 +667,18 @@ def train_model(data_path="data/self_play",
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    return last_p_loss, last_v_loss
+    # Full final-epoch metrics for the per-iteration trend (metrics.json). last_p/v_loss are the
+    # TRAIN losses (kept as policy_loss/value_loss for back-compat); these add the val split, the
+    # policy top-1 accuracies, and the KL-anchor value — all otherwise discarded after printing.
+    extra_metrics = {
+        "val_policy_loss": round(va_p_avg, 4),
+        "val_value_loss": round(va_v_avg, 4),
+        "train_acc": round(tr_acc_pct, 1),
+        "val_acc": round(va_acc_pct, 1),
+        "kl_anchor": round(kl_avg, 4),
+        "grad_norm": round(gn_avg, 3),
+    }
+    return last_p_loss, last_v_loss, extra_metrics
 
 if __name__ == "__main__":
     train_model(epochs=10)

@@ -9,13 +9,22 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # --- Vast 4090-24GB / 64-core config (sourced after hyperparams via the EXTRA_ENV hook) ---
 OVR="$HERE/.aws_overrides.env.sh"
 cat > "$OVR" <<'ENV'
-# Self-play: 120 workers on the 64-core box — the balanced point (empirically: 240 thrashed on context
-#   switches + single-server queue contention; 96 under-fed). CUDA_BATCH = 120×8 = 960 (fits 24GB).
-export NUM_WORKERS=120
-export RESERVED_CORES=2
+# Self-play: 184 workers on the 96-core box (~1.9/core — same density as the working 120/64, so no
+#   240-style per-core thrash). GPU measured at only ~55% sm at 120w → starved, not saturated; more
+#   producers aim to fill it. CUDA_BATCH = 184×8 = 1472 (< VRAM_CAP 16000, fits 24GB; train runs 2048).
+export NUM_WORKERS=184
+# Reserve the top 6 cores for the GPU-feeding inference server (1 gather thread + 6 stream executors).
+# At 2 on a 96-core box the server competes with 184 workers for CPU — and the server feed is the
+# suspected ~55%-util bottleneck, so give it dedicated cores. Workers get the remaining 90 (~2/core).
+export RESERVED_CORES=6
 CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))
 (( CUDA_BATCH_SIZE > VRAM_CAP )) && CUDA_BATCH_SIZE=$VRAM_CAP
 export CUDA_BATCH_SIZE
+
+# Batch-gather timeout 0.02→0.03s (the experiment): give partial batches 10ms more to fill before
+# dispatch. NO-OP if batches already hit the cap; helps only if they're timing out small. Watch the
+# [server-batch] log (avg fill / hit-cap%) + nvidia-smi sm% to judge — NOT load average.
+export CUDA_TIMEOUT_INFERENCE=0.03
 
 # Opening exploration: τ=1 sampling for the first 16 plies (hyperparams halved it to 8 "to stay
 # on-distribution" — a corrupted-era call, now retired). Restore 16: self-play funneled into ~7
@@ -33,6 +42,13 @@ export TRAIN_DL_PREFETCH=2
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
 export TRAIN_MIN_ITER=0
+
+# Train-from-lineage (AZ-2017): continue training from candidate.pth, not best_model.pth. NO-OP while
+# candidates keep promoting (promotion copies candidate→best, so the two bases are identical). Bites
+# only on the FIRST rejection: lineage continues from the rejected candidate (no wasted learning)
+# instead of resetting to champion. KL-anchor stays pinned to pretrained. Reversible: flip to 0 to
+# reset to champion if a lineage ever stalls (arena gate keeps self-play clean throughout).
+export TRAIN_FROM_LINEAGE=1
 
 # Arena: 50 workers × 4 games = 200 games (tighter promotion gate). 4/worker = 2 White + 2 Black,
 #   stays color-balanced. Stockfish eval kept at 64×... (its own knobs below).

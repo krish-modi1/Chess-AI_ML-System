@@ -567,7 +567,8 @@ MIN_TRAIN_ITERS = int(os.environ.get("MIN_TRAIN_ITERS", 1))
 # --- DRY WORKER WRAPPERS ---
 
 def run_stockfish_server_worker(worker_id, in_q, out_q, n_games, stockfish_path, sims, worker_batch,
-                                sf_elo, max_moves, result_q, shm_inp, shm_pol, shm_val):
+                                sf_elo, max_moves, result_q, shm_inp, shm_pol, shm_val,
+                                tally=None, total_games=0):
     """Play n_games of Model-vs-Stockfish. The model's MCTS inference is routed to the shared GPU
     InferenceServer (batched, like self-play); Stockfish runs on CPU as the opponent. Pushes one
     result dict (or None on failure) per game to result_q."""
@@ -647,7 +648,21 @@ def run_stockfish_server_worker(worker_id, in_q, out_q, n_games, stockfish_path,
         buf = io.StringIO(); print(pgn, file=buf, end="\n\n")
         result_q.put({"result": result, "pgn_str": buf.getvalue(),
                       "agent_is_white": agent_is_white, "game_id": game_id, "num_moves": len(game.moves)})
-        print(f"[SF Worker {worker_id}] Game {game_id+1}: {result} ({white} vs {black}) | Moves: {len(game.moves)}")
+        # Running GLOBAL tally across all SF workers (shared mp.Array) + model WR — same format and
+        # formula as the arena: W is from the MODEL's POV, WR = (W + 0.5D + 0.5FD) / total.
+        if   result == "1-0": cat = 0 if agent_is_white else 2   # model win / loss
+        elif result == "0-1": cat = 2 if agent_is_white else 0   # model loss / win
+        elif result == "*":   cat = 3                            # reached move cap = forced draw
+        else:                 cat = 1                            # draw
+        line = f"[SF Worker {worker_id}] Game {game_id+1}: {result} ({white} vs {black}) | Moves: {len(game.moves)}"
+        if tally is not None:
+            with tally.get_lock():
+                tally[cat] += 1
+                tw, td, tl, tfd = tally[0], tally[1], tally[2], tally[3]
+            tot = tw + td + tl + tfd
+            wr = (tw + 0.5 * td + 0.5 * tfd) / tot if tot else 0.0
+            line += f"  ||  W-D-L-FD {tw}-{td}-{tl}-{tfd}  WR {100*wr:4.1f}%  ({tot}/{total_games})"
+        print(line)
     try:
         engine.quit()
     except Exception:
@@ -673,11 +688,13 @@ def run_stockfish_eval_gpu(model_path, num_games, stockfish_path, sims, sf_elo, 
         model_path, n_workers, WORKER_BATCH_SIZE, eval_cuda_batch, CUDA_STREAMS, CUDA_TIMEOUT_INFERENCE)
 
     result_q = mp.Queue()
+    sf_tally = mp.Array('i', 4)   # shared running [model_wins, draws, losses, forced_draws] for the live line
     workers = []
     for i in range(n_workers):
         p = mp.Process(target=run_stockfish_server_worker,
                        args=(i, server.input_queue, wq[i], per[i], stockfish_path, sims,
-                             WORKER_BATCH_SIZE, sf_elo, max_moves, result_q, shm_inp, shm_pol, shm_val))
+                             WORKER_BATCH_SIZE, sf_elo, max_moves, result_q, shm_inp, shm_pol, shm_val,
+                             sf_tally, num_games))
         p.start(); workers.append(p)
 
     results = []
@@ -1057,7 +1074,7 @@ def run_training_phase(iteration):
         train_base = CANDIDATE_MODEL
         print(f"  Train-from-lineage: base = candidate.pth (anchor pinned to pretrained)")
 
-    p_loss, v_loss = train_model(data_path=DATA_DIR,
+    p_loss, v_loss, train_metrics = train_model(data_path=DATA_DIR,
                 input_model_path=train_base,
                 output_model_path=CANDIDATE_MODEL,
                 epochs=TRAIN_EPOCHS,
@@ -1068,7 +1085,7 @@ def run_training_phase(iteration):
                 anchor_model_path=pretrained_anchor)
 
     _update_swa()
-    return p_loss, v_loss
+    return p_loss, v_loss, train_metrics
 
 def run_probes(iteration):
     """Offline diagnostics (read-only) run before the arena: value-head calibration vs the champion
@@ -1097,6 +1114,13 @@ def run_probes(iteration):
             markers["value_acc_cand"] = int(accs["cand"])
             markers["value_acc_champ"] = int(accs["champ"])
             markers["value_acc_gap"] = int(accs["cand"]) - int(accs["champ"])
+        # Value-head sharpness (mean|v|) and decisiveness (|v|>=0.9 share) per model — the headline
+        # value-head trend for the cand-vs-champ comparison chart.
+        meanv = dict(re.findall(r"^\s*(\w+)\s+mean\|v\|=([\d.]+)", out, re.M))
+        dec   = dict(re.findall(r"^\s*(\w+)\s+mean\|v\|=.*?\|v\|>=0\.9:\s*(\d+)%", out, re.M))
+        for who in ("cand", "champ"):
+            if who in meanv: markers[f"value_meanv_{who}"] = float(meanv[who])
+            if who in dec:   markers[f"value_decisive_{who}"] = int(dec[who])
     except Exception as e:
         print(f"  [probe] probe_all failed: {e}")
 
@@ -1108,8 +1132,12 @@ def run_probes(iteration):
         print(out)
         mkl = re.search(r"KL\(MCTS.*?:\s*([\d.]+)\s*nats", out)
         mov = re.search(r"override.*?:\s*([\d.]+)%", out)
+        mt1 = re.search(r"top1-agree.*?:\s*([\d.]+)%", out)
+        mde = re.search(r"Δ=([+\-]?[\d.]+)", out)
         if mkl: markers["search_kl"] = float(mkl.group(1))
         if mov: markers["search_override"] = float(mov.group(1))
+        if mt1: markers["search_top1"] = float(mt1.group(1))
+        if mde: markers["search_dentropy"] = float(mde.group(1))
     except Exception as e:
         print(f"  [probe] search_probe failed: {e}")
 
@@ -1117,7 +1145,7 @@ def run_probes(iteration):
     return markers or None
 
 
-def run_evaluation_phase(iteration, logger, p_loss, v_loss):
+def run_evaluation_phase(iteration, logger, p_loss, v_loss, train_metrics=None):
     print(f"\n=== ITERATION {iteration}: EVALUATION PHASE ===")
     probe_markers = run_probes(iteration)
     cleanup_memory() # Clear VRAM before launching multiple evaluation workers
@@ -1152,14 +1180,18 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss):
     #    gate (after a promotion the candidate IS the new champion, so it doubles as the champion's
     #    Elo). Metrics-only: it never promotes. NO_PROMOTE is the dry-run/test mode.
     if STOCKFISH_EVERY_ITER or arena_promoted or NO_PROMOTE:
-        tag = "new champion" if arena_promoted else "candidate"
+        tag = "new champion" if arena_promoted else "reigning champion"
         print(f" [Stockfish/BayesElo] Playing {STOCKFISH_GAMES} games vs Elo {STOCKFISH_ELO} ({tag})...")
         cleanup_memory()
         try:
             pgn_path = f"game_engine/evaluation/pgn/iter_{iteration}_{int(time.time())}.pgn"
-            # Measure the candidate (== best_model after a promotion). Server-routed: model on ONE GPU server.
+            # Measure best_model (the champion / self-play generator): _promote_best() already ran, so
+            # it's the new champion if promoted, else the reigning one — a rejected candidate is
+            # discarded and its Elo is meaningless. Ties the Elo trend to actual strength. EXCEPTION:
+            # NO_PROMOTE never updates best_model, so the dry-run measures the candidate under test.
+            sf_target = CANDIDATE_MODEL if NO_PROMOTE else BEST_MODEL
             bayeselo_results = run_stockfish_eval_gpu(
-                model_path=CANDIDATE_MODEL,
+                model_path=sf_target,
                 num_games=STOCKFISH_GAMES,
                 stockfish_path=STOCKFISH_PATH,
                 sims=EVAL_SIMULATIONS,
@@ -1186,7 +1218,7 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss):
         print(f" [Stockfish] Skipped (STOCKFISH_EVERY_ITER=0, no promotion).")
 
     logger.log(iteration, p_loss, v_loss, win_rate, est_elo, stockfish_elo=STOCKFISH_ELO,
-               probe=probe_markers)
+               probe=probe_markers, train=train_metrics)
 
 if __name__ == "__main__":
     setup_child_logging()
@@ -1229,6 +1261,7 @@ if __name__ == "__main__":
             # runs all phases from the top. p_loss/v_loss default for the resume-into-eval case.
             resume_phase = start_phase if it == start_iter else 1
             p_loss, v_loss = 0.0, 0.0
+            train_metrics = {}
 
             # === PHASE 1: SELF-PLAY ===
             if resume_phase <= 1:
@@ -1274,7 +1307,7 @@ if __name__ == "__main__":
                 _t_phase = time.time()
 
                 try:
-                    p_loss, v_loss = run_training_phase(it)
+                    p_loss, v_loss, train_metrics = run_training_phase(it)
                     print(f"\n✅ ITERATION {it} - PHASE 2 COMPLETE (Policy Loss: {p_loss:.4f}, Value Loss: {v_loss:.4f})")
                 except Exception as e:
                     print(f"\n❌ ITERATION {it} - PHASE 2 FAILED: {e}")
@@ -1304,7 +1337,7 @@ if __name__ == "__main__":
                     print(f"{'='*60}")
 
                     try:
-                        run_evaluation_phase(it, MetricsLogger(), p_loss, v_loss)
+                        run_evaluation_phase(it, MetricsLogger(), p_loss, v_loss, train_metrics)
                         print(f"\n✅ ITERATION {it} - PHASE 3 COMPLETE")
                     except Exception as e:
                         print(f"\n❌ ITERATION {it} - PHASE 3 FAILED: {e}")
