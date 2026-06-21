@@ -575,9 +575,23 @@ def run_stockfish_server_worker(worker_id, in_q, out_q, n_games, stockfish_path,
     try:
         engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
         try:
+            if "UCI_Elo" not in engine.options:
+                raise RuntimeError("engine exposes no UCI_Elo option")
             engine.configure({"UCI_LimitStrength": True, "UCI_Elo": sf_elo})
-        except Exception:
-            pass  # older Stockfish may not support UCI_Elo
+        except Exception as e:
+            # Could NOT apply the strength limit (e.g. SF 14.x floor is 1350 ≠ SF 16's 1320, or no
+            # UCI_Elo). Running unlimited gives a garbage 0/N anchor — SKIP Stockfish this iteration
+            # instead (surface the error, return None for every game so the eval reports "skipped").
+            if worker_id == 0:
+                print(f"[SF] ❌ UCI_Elo={sf_elo} could not be applied ({e}) — SKIPPING Stockfish this "
+                      f"iteration (refusing to measure against an UNLIMITED engine).")
+            try:
+                engine.quit()
+            except Exception:
+                pass
+            for _ in range(n_games):
+                result_q.put(None)
+            return
     except Exception as e:
         print(f"[SF Worker {worker_id}] engine launch failed: {e}")
         for _ in range(n_games):

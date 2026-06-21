@@ -110,14 +110,29 @@ fi
 export PATH="$HOME/.local/bin:$PATH"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 3. Set Stockfish path  (Ubuntu apt installs to /usr/games/stockfish)
+# 3. Stockfish 16 — BUILD FROM SOURCE (pinned, identical to the local SF 16 the anchor was tuned on).
+#    The box's apt stockfish is version-dependent: older Ubuntu ships SF 14.1, whose UCI_Elo floor is
+#    1350 (not SF 16's 1320). Requesting 1320 on SF 14.1 throws, gets swallowed by main.py's except,
+#    and SF runs UNLIMITED (the iter-3 0/128). Building SF 16 makes UCI_Elo=1320 valid + calibration
+#    identical to local. ~3-5 min; reuses the cmake/make toolchain already installed for the .so.
 # ──────────────────────────────────────────────────────────────────────────────
-export STOCKFISH_PATH=$(which stockfish 2>/dev/null || echo "/usr/games/stockfish")
 echo ""
-echo "[3/9] STOCKFISH_PATH=$STOCKFISH_PATH"
+SF_BIN="$HOME/.local/bin/stockfish"
+if "$SF_BIN" --version 2>/dev/null | grep -q "Stockfish 16"; then
+  echo "[3/9] Stockfish 16 already built at $SF_BIN"
+else
+  echo "[3/9] Building Stockfish 16 from source (box apt = $(stockfish --version 2>/dev/null | head -1 || echo none))..."
+  rm -rf /tmp/Stockfish
+  git clone --depth 1 --branch sf_16 https://github.com/official-stockfish/Stockfish.git /tmp/Stockfish
+  ( cd /tmp/Stockfish/src && make -j"$(nproc)" build ARCH=x86-64-sse41-popcnt )
+  mkdir -p "$HOME/.local/bin"
+  cp /tmp/Stockfish/src/stockfish "$SF_BIN"
+fi
+export STOCKFISH_PATH="$SF_BIN"
+echo "[3/9] STOCKFISH_PATH=$STOCKFISH_PATH  ($("$SF_BIN" --version 2>/dev/null | head -1))"
 
-if [[ ! -x "$STOCKFISH_PATH" ]]; then
-  echo "ERROR: stockfish binary not found at $STOCKFISH_PATH" >&2
+if [[ ! -x "$STOCKFISH_PATH" ]] || ! "$STOCKFISH_PATH" --version 2>/dev/null | grep -q "Stockfish 16"; then
+  echo "ERROR: Stockfish 16 build/verify failed at $STOCKFISH_PATH" >&2
   exit 1
 fi
 
