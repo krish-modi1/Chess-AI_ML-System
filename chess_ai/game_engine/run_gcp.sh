@@ -118,20 +118,24 @@ export PATH="$HOME/.local/bin:$PATH"
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 SF_BIN="$HOME/.local/bin/stockfish"
-if "$SF_BIN" --version 2>/dev/null | grep -q "Stockfish 16"; then
+# NB: capture --version into a var and string-match — a piped `grep -q` SIGPIPEs Stockfish, which
+# under `set -o pipefail` makes the pipeline non-zero and false-fails the check.
+SF_VER="$("$SF_BIN" --version 2>/dev/null | head -1 || true)"
+if [[ "$SF_VER" == *"Stockfish 16"* ]]; then
   echo "[3/9] Stockfish 16 already built at $SF_BIN"
 else
-  echo "[3/9] Building Stockfish 16 from source (box apt = $(stockfish --version 2>/dev/null | head -1 || echo none))..."
+  echo "[3/9] Building Stockfish 16 from source..."
   rm -rf /tmp/Stockfish
   git clone --depth 1 --branch sf_16 https://github.com/official-stockfish/Stockfish.git /tmp/Stockfish
   ( cd /tmp/Stockfish/src && make -j"$(nproc)" build ARCH=x86-64-sse41-popcnt )
   mkdir -p "$HOME/.local/bin"
   cp /tmp/Stockfish/src/stockfish "$SF_BIN"
+  SF_VER="$("$SF_BIN" --version 2>/dev/null | head -1 || true)"
 fi
 export STOCKFISH_PATH="$SF_BIN"
-echo "[3/9] STOCKFISH_PATH=$STOCKFISH_PATH  ($("$SF_BIN" --version 2>/dev/null | head -1))"
+echo "[3/9] STOCKFISH_PATH=$STOCKFISH_PATH  ($SF_VER)"
 
-if [[ ! -x "$STOCKFISH_PATH" ]] || ! "$STOCKFISH_PATH" --version 2>/dev/null | grep -q "Stockfish 16"; then
+if [[ ! -x "$STOCKFISH_PATH" || "$SF_VER" != *"Stockfish 16"* ]]; then
   echo "ERROR: Stockfish 16 build/verify failed at $STOCKFISH_PATH" >&2
   exit 1
 fi
