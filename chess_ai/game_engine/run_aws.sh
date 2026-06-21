@@ -34,10 +34,10 @@ export TRAIN_DL_PREFETCH=2
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
 export TRAIN_MIN_ITER=0
 
-# Eval: 64 workers × 2 games = 128 games for BOTH arena and Stockfish, shared GPU inference servers
-#   (server-mode/SHM). 2 games/worker keeps color balance (1 White + 1 Black).
-export EVAL_WORKERS=64
-export GAMES_PER_EVAL_WORKER=2
+# Arena: 50 workers × 4 games = 200 games (tighter promotion gate). 4/worker = 2 White + 2 Black,
+#   stays color-balanced. Stockfish eval kept at 64×... (its own knobs below).
+export EVAL_WORKERS=50
+export GAMES_PER_EVAL_WORKER=4
 export STOCKFISH_WORKERS=64
 export STOCKFISH_GAMES=128
 
