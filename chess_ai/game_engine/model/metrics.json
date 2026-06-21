@@ -22,12 +22,27 @@
     "arena_win_rate": 0.6091370558375635,
     "model_elo": null,
     "elo_measured": false,
-    "elo_note": "200-0 sweep vs SF-16@1320 — BayesElo can't rate a 100% result (prior-capped ~2154, pure noise). Not a real measurement; anchor raised to 1800 from iter 5.",
+    "elo_note": "200-0 sweep vs SF-16@1320 \u2014 BayesElo can't rate a 100% result (prior-capped ~2154, pure noise). Not a real measurement; anchor raised to 1800 from iter 5.",
     "stockfish_elo": 1320,
     "value_acc_cand": 71,
     "value_acc_champ": 70,
     "value_acc_gap": 1,
     "search_kl": 0.551,
     "search_override": 41.9
+  },
+  {
+    "iteration": 5,
+    "timestamp": "2026-06-21T20:05:38.302926",
+    "policy_loss": 1.4563329472686306,
+    "value_loss": 0.6420968211058414,
+    "arena_win_rate": 0.4793814432989691,
+    "model_elo": null,
+    "elo_measured": false,
+    "stockfish_elo": 1800,
+    "value_acc_cand": 71,
+    "value_acc_champ": 71,
+    "value_acc_gap": 0,
+    "search_kl": 0.604,
+    "search_override": 44.8
   }
 ]
