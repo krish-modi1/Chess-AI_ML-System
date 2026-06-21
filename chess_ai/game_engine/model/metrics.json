@@ -1,1 +1,17 @@
-[]
+[
+  {
+    "iteration": 3,
+    "timestamp": "2026-06-21T01:50:00.239379",
+    "policy_loss": 1.5212849459864877,
+    "value_loss": 0.7134104208512739,
+    "arena_win_rate": 0.64453125,
+    "model_elo": null,
+    "elo_measured": false,
+    "stockfish_elo": 1320,
+    "value_acc_cand": 71,
+    "value_acc_champ": 69,
+    "value_acc_gap": 2,
+    "search_kl": 0.429,
+    "search_override": 50.2
+  }
+]
