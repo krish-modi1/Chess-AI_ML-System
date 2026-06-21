@@ -30,9 +30,9 @@ export GAMES_PER_EVAL_WORKER=4
 export STOCKFISH_WORKERS=50
 export STOCKFISH_GAMES=200
 
-# Elo anchor — time-based UCI_Elo=1320 (NODES=0). At pretrained ~1450-1600 this lands the model in a
-# readable ~60-70% band with room to climb; fixed-nodes floors SF ~1700+ (too strong, low resolution
-# early). Raise the anchor once the model is clearly past 1320. Measure EVERY iter = the scoreboard.
+# Elo anchor — time-based UCI_Elo=1800 (NODES=0). iter-4 SWEPT 1320 200-0 (BayesElo could only
+# floor it at ~2154), so 1320 has zero resolution now. 1800 ∈ SF-16 range [1320,3190]; raised to
+# pull the score back into a measurable ~30-70% band. Bump again if the model sweeps 1800 too.
 export STOCKFISH_EVERY_ITER=1
-export STOCKFISH_ELO=1320
+export STOCKFISH_ELO=1800
 export STOCKFISH_NODES=0
