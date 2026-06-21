@@ -27,7 +27,7 @@ export CUDA_BATCH_SIZE
 # Batch-gather timeout 0.02→0.03s (the experiment): give partial batches 10ms more to fill before
 # dispatch. NO-OP if batches already hit the cap; helps only if they're timing out small. Watch the
 # [server-batch] log (avg fill / hit-cap%) + nvidia-smi sm% to judge — NOT load average.
-export CUDA_TIMEOUT_INFERENCE=0.025
+export CUDA_TIMEOUT_INFERENCE=0.1
 
 # Opening exploration: τ=1 sampling for the first 16 plies (hyperparams halved it to 8 "to stay
 # on-distribution" — a corrupted-era call, now retired). Restore 16: self-play funneled into ~7
