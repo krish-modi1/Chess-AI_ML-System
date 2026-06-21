@@ -9,13 +9,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # --- Vast 4090-24GB / 64-core config (sourced after hyperparams via the EXTRA_ENV hook) ---
 OVR="$HERE/.aws_overrides.env.sh"
 cat > "$OVR" <<'ENV'
-# Self-play: 120 workers on the Romania box — 48GB VRAM, EPYC 7V73X (Zen3 + 3D V-cache), 64 vCPUs.
-#   We picked this box to FEED the single-thread gather loop faster (its real bottleneck: GPU stuck at
-#   55% sm), NOT to run more workers — on 64 vCPUs, piling on workers just thrashes a faster CPU. So
-#   modest 120 (~2.1/worker-core after reserve) and let the V-cache core form batches quickly.
-#   CUDA_BATCH = 120×8 = 960 (< VRAM_CAP 24000 — tons of 48GB headroom). Test 140 only if [server-batch]
-#   shows the queue starving (avg-fill low); back off if load spikes.
-export NUM_WORKERS=120
+# Self-play: 200 workers on the Romania box — 48GB VRAM, EPYC 7V73X (Zen3 + 3D V-cache), 64 vCPUs.
+#   MEASURED at 120w: sm ~71% (V-cache lifted it from the old 55%), but [server-batch] showed avg-fill
+#   370/960 @ 100% timeout (queue-STARVED) with load only 9.7/64 (CPU idle). So the batch is under-fed
+#   and there's CPU to spare → MORE workers fill it. 200 projects ~600/960 + ~85% sm. CUDA_BATCH=1600.
+#   Push to 240-280 if avg-fill keeps rising with sm; stop when avg-fill plateaus (gather saturated) or
+#   load nears ~50/64. (Timeout is NOT the lever — fixed leaf rate just repackages into bigger batches.)
+export NUM_WORKERS=200
 # Reserve 8 of the 64 vCPUs for the GPU-feeding inference server (1 gather + 8 stream executors,
 # CUDA_STREAMS=8 at the 48GB tier). It's the feed bottleneck and the reason we're on a V-cache box —
 # give it dedicated fast cores, off the 120 workers' 56 cores.
