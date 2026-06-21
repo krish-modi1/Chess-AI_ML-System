@@ -278,7 +278,12 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                 if FULL_SEARCH_PROB > 0.0:
                     is_full = (np.random.random() < FULL_SEARCH_PROB)
                     base_sims = REDUCED_SIMULATIONS if reduced_mode else SIMULATIONS
-                    worker.mcts_engine.simulations = base_sims if is_full else FAST_SIMULATIONS
+                    # Once the decided/no-progress cut fires, base_sims drops to REDUCED_SIMULATIONS.
+                    # Clamp the fast count to it too — otherwise the 75% fast moves keep running at
+                    # FAST_SIMULATIONS (200 > 100), defeating the cut (and costing more than the
+                    # recorded full moves). min() leaves normal mode unchanged (fast stays 200).
+                    fast_sims = min(FAST_SIMULATIONS, base_sims)
+                    worker.mcts_engine.simulations = base_sims if is_full else fast_sims
                 else:
                     is_full = True
 
