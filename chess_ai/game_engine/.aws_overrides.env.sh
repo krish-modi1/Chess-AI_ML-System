@@ -17,18 +17,18 @@ export MAX_WORKER_LEAD=3
 
 # Training: batch 2048 (fits 24GB — 4096 OOMs at ~22GB), 32 DL workers × prefetch 2.
 export TRAIN_BATCH_SIZE=2048
-export TRAIN_DL_WORKERS=32
+export TRAIN_DL_WORKERS=50
 export TRAIN_DL_PREFETCH=2
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
 export TRAIN_MIN_ITER=0
 
-# Eval: 64 workers × 2 games = 128 games for BOTH arena and Stockfish, shared GPU inference servers
-#   (server-mode/SHM). 2 games/worker keeps color balance (1 White + 1 Black).
-export EVAL_WORKERS=64
-export GAMES_PER_EVAL_WORKER=2
-export STOCKFISH_WORKERS=64
-export STOCKFISH_GAMES=128
+# Arena: 50 workers × 4 games = 200 games (tighter promotion gate). 4/worker = 2 White + 2 Black,
+#   stays color-balanced. Stockfish eval kept at 64×... (its own knobs below).
+export EVAL_WORKERS=50
+export GAMES_PER_EVAL_WORKER=4
+export STOCKFISH_WORKERS=50
+export STOCKFISH_GAMES=200
 
 # Elo anchor — time-based UCI_Elo=1320 (NODES=0). At pretrained ~1450-1600 this lands the model in a
 # readable ~60-70% band with room to climb; fixed-nodes floors SF ~1700+ (too strong, low resolution
