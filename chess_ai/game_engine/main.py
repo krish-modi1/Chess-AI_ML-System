@@ -669,32 +669,10 @@ def run_stockfish_server_worker(worker_id, in_q, out_q, n_games, stockfish_path,
         pass
 
 
-def elo_from_wdl(w, d, l, fd, sf_elo):
-    """Model Elo vs a fixed-strength Stockfish anchor, straight from W/D/L (FD counts as a draw) via the
-    standard logistic formula — no BayesElo binary, whose text-table parse is fragile across builds
-    (the recurring 'Failed to parse'). For a non-degenerate result this equals BayesElo to within its
-    prior. Returns (model_elo|None, lo, hi, note); model_elo is None on a 0%/100% sweep — Elo is then
-    unbounded, so we report a continuity-corrected one-sided bound in the note and you raise/lower the
-    anchor. Deterministic and identical on every machine."""
-    import math
-    n = w + d + l + fd
-    if n == 0:
-        return None, None, None, "no games"
-    score = (w + 0.5 * d + 0.5 * fd) / n
-    if 0.0 < score < 1.0:
-        diff = -400.0 * math.log10(1.0 / score - 1.0)
-        elo = sf_elo + diff
-        se = (400.0 / math.log(10)) / math.sqrt(n * score * (1.0 - score))   # delta-method Elo stderr
-        return elo, elo - 1.96 * se, elo + 1.96 * se, f"{100*score:.1f}% over {n} games (±{1.96*se:.0f})"
-    adj = (n - 0.5) / n if score >= 1.0 else 0.5 / n                          # continuity correction
-    bound = sf_elo - 400.0 * math.log10(1.0 / adj - 1.0)
-    kind = "floor (anchor too WEAK — raise it)" if score >= 1.0 else "ceiling (anchor too STRONG — lower it)"
-    return None, None, None, f"{100*score:.0f}% sweep over {n} games → Elo {kind}: ~{bound:.0f}"
-
-
 def run_stockfish_eval_gpu(model_path, num_games, stockfish_path, sims, sf_elo, max_moves, pgn_path):
     """Server-routed Stockfish eval: the evaluated model runs on ONE GPU InferenceServer (batched),
     Stockfish on CPU. Returns the Elo result dict (or None if no games completed)."""
+    from game_engine.bayeselo_runner import BayesEloRunner
     if not os.path.exists(stockfish_path):
         print(f"❌ Stockfish not found at {stockfish_path}")
         return None
@@ -761,17 +739,30 @@ def run_stockfish_eval_gpu(model_path, num_games, stockfish_path, sims, sf_elo, 
         f.write("".join(parts))
     print(f"  Saved {len(results)} games to {pgn_path}  (W{w}/D{d}/FD{fd}/L{l})")
 
-    # Direct logistic Elo from the W/D/L counts — no BayesElo binary (parse was failing on the box).
-    elo, elo_lo, elo_hi, note = elo_from_wdl(w, d, l, fd, sf_elo)
-    if elo is not None:
-        print(f"  [Elo] {elo:.0f}  [{elo_lo:.0f}, {elo_hi:.0f}]  vs SF {sf_elo}  ({note})")
-    else:
+    n = len(results)
+    # Sweep guard (NOT a formula — a degenerate-case detector): BayesElo returns a prior-capped number
+    # on a 0%/100% result, which is pure noise. Null it and flag the anchor instead of recording a fake.
+    if n and (w == n or l == n):
+        kind = "raise" if w == n else "lower"
+        note = f"{'100%' if w == n else '0%'} sweep over {n} games — Elo unbounded, {kind} the anchor"
         print(f"  [Elo] not measurable — {note}")
+        elo = elo_lo = elo_hi = None
+    else:
+        # Third-party BayesElo is the sole Elo source. Needs a NATIVE binary (run_gcp.sh builds it).
+        r = BayesEloRunner(stockfish_elo=sf_elo).run(pgn_path)
+        if r and r.get('model_elo') is not None:
+            elo = r['model_elo']; elo_lo = r.get('model_ci_lower'); elo_hi = r.get('model_ci_upper')
+            note = f"BayesElo {elo:.0f} vs SF {sf_elo} over {n} games"
+            print(f"  [Elo] {elo:.0f}  vs SF {sf_elo}  ({note})")
+        else:
+            elo = elo_lo = elo_hi = None
+            note = "BayesElo failed (is the native binary built on this box? run_gcp.sh step 3b)"
+            print(f"  [Elo] BayesElo failed — {note}")
     return {
         'model_elo': elo, 'elo_lower': elo_lo, 'elo_upper': elo_hi, 'elo_note': note,
         'win_count': w, 'loss_count': l, 'draw_count': d, 'forced_draw_count': fd,
-        'total_games': len(results),
-        'win_rate': (w + 0.5 * d + 0.5 * fd) / len(results) if results else 0.0,
+        'total_games': n,
+        'win_rate': (w + 0.5 * d + 0.5 * fd) / n if n else 0.0,
     }
 
 

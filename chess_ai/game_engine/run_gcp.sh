@@ -140,6 +140,17 @@ if [[ ! -x "$STOCKFISH_PATH" || "$SF_VER" != *"Stockfish 16"* ]]; then
   exit 1
 fi
 
+# BayesElo — build NATIVE from source (one-file compile per its makefile). The committed binary is a
+# foreign dynamic build: on a box with different libs it fails to run → empty stdout → the recurring
+# "Failed to parse". A native build (g++ already installed for the .so) makes the Elo check work here.
+echo ""
+echo "[3b/9] Building BayesElo from source..."
+if ( cd "$PARENT_DIR/BayesElo" && g++ -o bayeselo -O3 -w bayeselo.cpp ); then
+  echo "[3b/9] BayesElo built native at $PARENT_DIR/BayesElo/bayeselo"
+else
+  echo "[3b/9] WARNING: BayesElo build failed — Elo measurement will report errors." >&2
+fi
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 4. Python — install deps system-wide (dedicated server, no venv needed)
 # ──────────────────────────────────────────────────────────────────────────────

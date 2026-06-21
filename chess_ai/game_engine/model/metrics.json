@@ -24,7 +24,8 @@
     "value_meanv_champ": 0.417,
     "value_decisive_champ": 15,
     "search_top1": 49.8,
-    "search_dentropy": 0.04
+    "search_dentropy": 0.04,
+    "elo_note": "BayesElo 708 vs SF-1320, but SF ran UNLIMITED (the iter-3 config bug) \u2014 invalid opponent, not recorded."
   },
   {
     "iteration": 4,
@@ -34,7 +35,7 @@
     "arena_win_rate": 0.609,
     "model_elo": null,
     "elo_measured": false,
-    "elo_note": "200-0 sweep vs SF-16@1320 \u2014 BayesElo can't rate a 100% result (prior-capped ~2154, pure noise). Not a real measurement; anchor raised to 1800 from iter 5.",
+    "elo_note": "BayesElo 2154 vs SF-1320 but 200-0 sweep \u2014 prior-capped noise, not a real measurement (anchor raised to 1800).",
     "stockfish_elo": 1320,
     "value_acc_cand": 71,
     "value_acc_champ": 70,
@@ -66,9 +67,9 @@
     "kl_anchor": 0.038,
     "grad_norm": 0.423,
     "arena_win_rate": 0.4793814432989691,
-    "model_elo": null,
-    "elo_measured": false,
-    "elo_note": "candidate REJECTED (arena 47.9%). Box measured the rejected candidate vs SF-1800 (W187/D2/L11 ~2278) + BayesElo parse-failed; not the champion, so null. First real champion Elo lands iter-6 with the direct-Elo code.",
+    "model_elo": 2294,
+    "elo_measured": true,
+    "elo_note": "BayesElo 2294\u00b142 vs SF-1800 over 200 games (W187/D2/L11). These are the REJECTED candidate's games (box ran SF on the candidate under old code); the champion that beat it in the arena is stronger. Champion Elo measured cleanly from iter-6 on.",
     "stockfish_elo": 1800,
     "value_acc_cand": 71,
     "value_acc_champ": 71,
@@ -80,6 +81,7 @@
     "search_kl": 0.604,
     "search_override": 44.8,
     "search_top1": 55.2,
-    "search_dentropy": 0.03
+    "search_dentropy": 0.03,
+    "elo_ci": 42
   }
 ]

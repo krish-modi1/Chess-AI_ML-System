@@ -9,14 +9,17 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # --- Vast 4090-24GB / 64-core config (sourced after hyperparams via the EXTRA_ENV hook) ---
 OVR="$HERE/.aws_overrides.env.sh"
 cat > "$OVR" <<'ENV'
-# Self-play: 184 workers on the 96-core box (~1.9/core — same density as the working 120/64, so no
-#   240-style per-core thrash). GPU measured at only ~55% sm at 120w → starved, not saturated; more
-#   producers aim to fill it. CUDA_BATCH = 184×8 = 1472 (< VRAM_CAP 16000, fits 24GB; train runs 2048).
-export NUM_WORKERS=184
-# Reserve the top 6 cores for the GPU-feeding inference server (1 gather thread + 6 stream executors).
-# At 2 on a 96-core box the server competes with 184 workers for CPU — and the server feed is the
-# suspected ~55%-util bottleneck, so give it dedicated cores. Workers get the remaining 90 (~2/core).
-export RESERVED_CORES=6
+# Self-play: 120 workers on the Romania box — 48GB VRAM, EPYC 7V73X (Zen3 + 3D V-cache), 64 vCPUs.
+#   We picked this box to FEED the single-thread gather loop faster (its real bottleneck: GPU stuck at
+#   55% sm), NOT to run more workers — on 64 vCPUs, piling on workers just thrashes a faster CPU. So
+#   modest 120 (~2.1/worker-core after reserve) and let the V-cache core form batches quickly.
+#   CUDA_BATCH = 120×8 = 960 (< VRAM_CAP 24000 — tons of 48GB headroom). Test 140 only if [server-batch]
+#   shows the queue starving (avg-fill low); back off if load spikes.
+export NUM_WORKERS=120
+# Reserve 8 of the 64 vCPUs for the GPU-feeding inference server (1 gather + 8 stream executors,
+# CUDA_STREAMS=8 at the 48GB tier). It's the feed bottleneck and the reason we're on a V-cache box —
+# give it dedicated fast cores, off the 120 workers' 56 cores.
+export RESERVED_CORES=8
 CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))
 (( CUDA_BATCH_SIZE > VRAM_CAP )) && CUDA_BATCH_SIZE=$VRAM_CAP
 export CUDA_BATCH_SIZE
@@ -35,8 +38,11 @@ export TEMP_MOVES=16
 # fewer workers finish all 10 and idle while stragglers catch up = less tail-idle at iter end.
 export MAX_WORKER_LEAD=3
 
-# Training: batch 2048 (fits 24GB — 4096 OOMs at ~22GB), 32 DL workers × prefetch 2.
-export TRAIN_BATCH_SIZE=2048
+# Training: batch 4096 — was 2048 (capped by the old 24GB card; 4096 OOM'd there). On 48GB with the
+# inference servers stopped during training, 4096 fits with headroom. Same LR (1e-4) → training is a
+# touch more conservative (half the steps/epoch, less gradient noise) — fine under the β=1.0 KL anchor;
+# bump LR ~1.4× later only if value loss stalls. 50 DL workers × prefetch 2.
+export TRAIN_BATCH_SIZE=4096
 export TRAIN_DL_WORKERS=50
 export TRAIN_DL_PREFETCH=2
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
@@ -57,11 +63,11 @@ export GAMES_PER_EVAL_WORKER=4
 export STOCKFISH_WORKERS=50
 export STOCKFISH_GAMES=200
 
-# Elo anchor — time-based UCI_Elo=1800 (NODES=0). iter-4 SWEPT 1320 200-0 (BayesElo could only
-# floor it at ~2154), so 1320 has zero resolution now. 1800 ∈ SF-16 range [1320,3190]; raised to
-# pull the score back into a measurable ~30-70% band. Bump again if the model sweeps 1800 too.
+# Elo anchor — time-based UCI_Elo=2100 (NODES=0). iter-5 scored 94% vs SF-1800 (BayesElo 2294±42),
+# nearly a sweep → wide bars. 2100 ∈ SF-16 spec [1320,3190] (verified live: UCI_LimitStrength+UCI_Elo
+# applies, no silent default) → puts a ~2294 model at ~75%, a tight readable band. Raise again as it climbs.
 export STOCKFISH_EVERY_ITER=1
-export STOCKFISH_ELO=1800
+export STOCKFISH_ELO=2100
 export STOCKFISH_NODES=0
 ENV
 export EXTRA_ENV="$OVR"
