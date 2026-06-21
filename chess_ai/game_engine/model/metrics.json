@@ -22,6 +22,7 @@
     "arena_win_rate": 0.6091370558375635,
     "model_elo": null,
     "elo_measured": false,
+    "elo_note": "200-0 sweep vs SF-16@1320 — BayesElo can't rate a 100% result (prior-capped ~2154, pure noise). Not a real measurement; anchor raised to 1800 from iter 5.",
     "stockfish_elo": 1320,
     "value_acc_cand": 71,
     "value_acc_champ": 70,
