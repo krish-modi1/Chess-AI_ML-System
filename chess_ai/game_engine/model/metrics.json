@@ -40,18 +40,6 @@
     "value_acc_champ": 70,
     "value_acc_gap": 1,
     "search_kl": 0.551,
-    "search_override": 41.9,
-    "val_policy_loss": 1.4725,
-    "val_value_loss": 0.6361,
-    "train_acc": 56.3,
-    "val_acc": 56.5,
-    "grad_norm": 0.625,
-    "kl_anchor": 0.035,
-    "value_meanv_cand": 0.46,
-    "value_decisive_cand": 20,
-    "value_meanv_champ": 0.384,
-    "value_decisive_champ": 15,
-    "search_top1": 58.1,
-    "search_dentropy": -0.08
+    "search_override": 41.9
   }
 ]
