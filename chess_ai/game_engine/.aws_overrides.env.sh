@@ -50,9 +50,10 @@ export GAMES_PER_EVAL_WORKER=2
 export STOCKFISH_WORKERS=100
 export STOCKFISH_GAMES=200
 
-# Elo anchor — time-based UCI_Elo=2300 (NODES=0). iter-6 champion measured 2392 vs SF-2100 (80% =
-# getting toward the wide-CI end). 2300 puts a 2392 model at ~63% — tighter measurement + ~200 Elo
-# headroom before it re-sweeps. 2300 ∈ SF-16 spec [1320,3190] (configure verified). Raise as it climbs.
-export STOCKFISH_EVERY_ITER=1
+# Stockfish/Elo ONLY on promotion (EVERY_ITER=0): a rejected iter leaves best_model unchanged, so its
+# Elo is unchanged — re-measuring it just burns 200 games and adds ±CI noise to the trend. Now that
+# BayesElo is reliable, measure the champion once per champion (on promotion); the logger carries the
+# last Elo forward on non-promoted iters (elo_measured=false). Arena still runs every iter (the gate).
+export STOCKFISH_EVERY_ITER=0
 export STOCKFISH_ELO=2800
 export STOCKFISH_NODES=0
