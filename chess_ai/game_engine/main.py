@@ -260,6 +260,20 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
         game_aborted = False
 
         try:
+            # Forced opening book: seed this game with one of the 20 openings, chosen round-robin by
+            # global game id so coverage is exactly even. Scripted plies are NOT recorded (no append to
+            # game_data); the tree + history are advanced so the first recorded search sees the position.
+            if USE_OPENING_BOOK and OPENING_BOOK:
+                opening = OPENING_BOOK[(worker_id * game_limit + i) % len(OPENING_BOOK)]
+                for u in opening.split():
+                    if game.is_over:
+                        break
+                    if not game.push(u):
+                        print(f" [Worker {worker_id}] ⚠️ book move {u} rejected ({opening}) — ending opening")
+                        break
+                    worker.advance_root(u)
+                    position_history.appendleft(game.board.copy())
+
             while not game.is_over:
                 if len(game.moves) >= MAX_MOVES_PER_GAME:
                     forced_draw = True
@@ -494,6 +508,35 @@ FAST_SIMULATIONS = int(os.environ.get("FAST_SIMULATIONS", 200))
 # Opening exploration: sample the played move (temperature=1) for the first TEMP_MOVES plies, then
 # greedy. Lower = stay closer to the prior's lines (less off-distribution opening drift). AZ used ~30.
 TEMP_MOVES = int(os.environ.get("TEMP_MOVES", 16))
+
+# Forced opening book (self-play): every game starts from one of 20 sound, structurally-distinct
+# openings, divided round-robin by global game id (each opening gets exactly 1/20 of games). Breaks
+# the ~98%-g1f3 self-play collapse — temperature can't diversify a peaked policy, so we seed the
+# opening externally and let the model play NATURALLY from each diverse start. Book plies are NOT
+# recorded (scripted moves aren't MCTS targets). All lines validated legal. USE_OPENING_BOOK=0 → off.
+USE_OPENING_BOOK = os.environ.get("USE_OPENING_BOOK", "1") == "1"
+OPENING_BOOK = [
+    "e2e4 e7e5 g1f3 b8c6 f1b5 a7a6",                     # Ruy Lopez
+    "e2e4 e7e5 g1f3 b8c6 f1c4 f8c5",                     # Italian
+    "e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3 a7a6", # Sicilian Najdorf
+    "e2e4 e7e6 d2d4 d7d5",                               # French
+    "e2e4 c7c6 d2d4 d7d5",                               # Caro-Kann
+    "d2d4 d7d5 c2c4 e7e6",                               # Queen's Gambit Declined
+    "d2d4 d7d5 c2c4 c7c6",                               # Slav
+    "d2d4 g8f6 c2c4 g7g6 b1c3 f8g7",                     # King's Indian
+    "d2d4 g8f6 c2c4 e7e6 b1c3 f8b4",                     # Nimzo-Indian
+    "d2d4 g8f6 c2c4 g7g6 b1c3 d7d5",                     # Grünfeld
+    "c2c4 e7e5 b1c3 g8f6",                               # English
+    "g1f3 d7d5 c2c4",                                    # Réti
+    "e2e4 d7d5 e4d5 d8d5 b1c3 d5a5",                     # Scandinavian
+    "e2e4 d7d6 d2d4 g8f6 b1c3 g7g6",                     # Pirc
+    "d2d4 d7d5 g1f3 g8f6 c1f4",                          # London
+    "e2e4 e7e5 f2f4",                                    # King's Gambit
+    "e2e4 e7e5 g1f3 b8c6 d2d4",                          # Scotch
+    "d2d4 g8f6 c2c4 e7e6 g2g3",                          # Catalan
+    "d2d4 d7d5 c2c4 d5c4",                               # Queen's Gambit Accepted
+    "d2d4 f7f5",                                         # Dutch
+]
 
 # --- No-progress (dead-draw) cut (self-play only) ---
 # The decided-game cut above only fires on WON positions (|value| high). Long DRAWN games have
