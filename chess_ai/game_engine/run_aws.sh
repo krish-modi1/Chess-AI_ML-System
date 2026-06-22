@@ -15,7 +15,7 @@ cat > "$OVR" <<'ENV'
 #   NEW CEILING IS RAM, not cores: ~0.4GB/worker → 280w ≈ 115GB + ~11GB/iter creep ≈ 126GB peak, ~22GB
 #   margin on 148GB (NO SWAP — do NOT exceed ~300). CUDA_BATCH=280×8=2240 (< VRAM_CAP 16000, inference
 #   fits 24GB easily). Watch free -g <130. Latency-bound — see [[selfplay-gpu-bottleneck]].
-export NUM_WORKERS=280
+export NUM_WORKERS=182
 # Reserve 8 of the 96 cores for the GPU-feeding inference server (1 gather + ~6 stream executors).
 # The server feed isn't the bottleneck (gather sits ~14% idle), but keeping it off the worker cores
 # avoids the deadlock-timeout-self-kill failure mode. Workers get the remaining 88.
@@ -24,9 +24,9 @@ CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))
 (( CUDA_BATCH_SIZE > VRAM_CAP )) && CUDA_BATCH_SIZE=$VRAM_CAP
 export CUDA_BATCH_SIZE
 
-# Batch-gather timeout 0.02→0.03s (the experiment): give partial batches 10ms more to fill before
-# dispatch. NO-OP if batches already hit the cap; helps only if they're timing out small. Watch the
-# [server-batch] log (avg fill / hit-cap%) + nvidia-smi sm% to judge — NOT load average.
+# Batch-gather timeout = 0.02s — TESTED best (0.02 beat 0.03 and 0.05 on wall-clock). Self-play is
+# latency-bound (workers block on each round-trip), so a SHORTER timeout = lower per-round-trip wait =
+# more leaves/sec. Don't raise it — fuller batches at a longer timeout are a vanity metric. [[selfplay-gpu-bottleneck]]
 export CUDA_TIMEOUT_INFERENCE=0.02
 
 # Opening exploration: τ=1 sampling for the first 16 plies (hyperparams halved it to 8 "to stay
