@@ -752,11 +752,18 @@ def run_stockfish_eval_gpu(model_path, num_games, stockfish_path, sims, sf_elo, 
                 results.append(r)
         except Exception:
             continue   # a single slow/missing game shouldn't drop all subsequent finished games
+    # Strict teardown (same as the arena) — escalate join → terminate → kill so a worker stuck on a
+    # slow Stockfish subprocess isn't orphaned, then drop SHM/queues and flush GPU+RAM before the
+    # next phase. No early-stop here: a BayesElo measurement needs the full game sample.
     for p in workers:
         p.join(timeout=10)
         if p.is_alive():
             p.terminate(); p.join(timeout=5)
+        if p.is_alive():
+            p.kill(); p.join()
     _stop_inference_server(server, sp)
+    del shm_inp, shm_pol, shm_val, wq, result_q, workers
+    cleanup_memory()
 
     if not results:
         print("❌ All Stockfish eval games failed")
@@ -845,8 +852,15 @@ def run_arena_server_worker(worker_id, n_games, cand_in_q, cand_out_q, champ_in_
                 history.appendleft(game.board.copy())
                 game.push(opening)
                 cand.advance_root(opening); champ.advance_root(opening)
+            aborted = False
             try:
                 while not game.is_over and len(game.moves) < max_moves:
+                    # Abort THIS in-flight game the moment the gate is mathematically decided
+                    # (checked per move, not just between games) — so a decided arena stops all
+                    # running games, not only un-started ones. The partial game is not scored.
+                    if stop_flag is not None and stop_flag.value != 0:
+                        aborted = True
+                        break
                     is_cand_turn = ((game.board.turn == chess.WHITE) == cand_is_white)
                     mover = cand if is_cand_turn else champ
                     mv, _ = mover.search(game, temperature=0.0, history=list(history), use_dirichlet=False)
@@ -859,6 +873,8 @@ def run_arena_server_worker(worker_id, n_games, cand_in_q, cand_out_q, champ_in_
             except Exception as e:
                 print(f"[Arena Worker {worker_id}] game {game_id} error: {e}")
                 continue
+            if aborted:
+                break  # gate locked mid-game; abandon the rest without scoring a partial result
             # Candidate-perspective outcome: 0=win 1=draw 2=loss 3=forced-draw
             if not game.is_over and len(game.moves) >= max_moves:
                 fd += 1; cat = 3; disp = "*"; tag = " (FORCED DRAW)"
@@ -888,11 +904,13 @@ def run_arena_server_worker(worker_id, n_games, cand_in_q, cand_out_q, champ_in_
                 # (zero risk): score = W + 0.5(D+FD); a loss is the worst possible remaining game.
                 if ARENA_EARLY_STOP and stop_flag is not None and total_games > 0:
                     score = tw + 0.5 * td + 0.5 * tfd
-                    need = PROMOTION_WIN_RATE * total_games
-                    if score + (total_games - tot) < need:   # can't reach the gate even winning out
-                        stop_flag.value = 1                  # → reject
-                    elif score >= need:                      # already clinched even losing out
-                        stop_flag.value = 2                  # → promote
+                    # Compare WRs with the SAME expression/operator as the upstream gate
+                    # (win_rate >= PROMOTION_WIN_RATE) so the early-stop can never disagree with it
+                    # — including the exact 55.0% boundary, where need = 0.55*N is not FP-exact.
+                    if (score + (total_games - tot)) / total_games < PROMOTION_WIN_RATE:
+                        stop_flag.value = 1   # best case (win out) still misses the gate → reject
+                    elif score / total_games >= PROMOTION_WIN_RATE:
+                        stop_flag.value = 2   # worst case (lose out) already clears the gate → promote
             print(line)
     except Exception as e:
         print(f"[Arena Worker {worker_id}] ❌ CRASHED: {e}")
@@ -934,12 +952,22 @@ def run_arena_eval_gpu(cand_model, champ_model, num_games, sims, max_moves):
                 totals[k] += r[k]
         except Exception:
             pass
+    # Strict teardown — the early-stop path can leave workers mid-search and the SHM/GPU buffers
+    # live; reclaim everything before the next phase (training) so nothing leaks across iterations
+    # (critical on a no-swap box). Escalate join → terminate → kill so no worker stuck in a native
+    # MCTS search is left orphaned.
     for p in workers:
         p.join(timeout=10)
         if p.is_alive():
             p.terminate(); p.join(timeout=5)
+        if p.is_alive():
+            p.kill(); p.join()
     _stop_inference_server(cand_server, cand_sp)
     _stop_inference_server(champ_server, champ_sp)
+    # Drop the SHM transport buffers + per-worker queues explicitly (don't wait for lazy GC), then
+    # force a GC + CUDA-cache flush. tally/stop_flag are read just below, so they are kept.
+    del cand_shm, champ_shm, cand_wq, champ_wq, result_q, workers
+    cleanup_memory()
 
     # The result_q aggregate silently drops a whole worker's games if that worker times out or is
     # terminated above — biasing the promotion gate. The shared mp.Array tally is incremented

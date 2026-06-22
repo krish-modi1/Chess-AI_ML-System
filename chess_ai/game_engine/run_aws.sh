@@ -57,7 +57,7 @@ export TRAIN_FROM_LINEAGE=1
 # Arena: 50 workers × 4 games = 200 games (tighter promotion gate). 4/worker = 2 White + 2 Black,
 #   stays color-balanced. Stockfish eval kept at 64×... (its own knobs below).
 export EVAL_WORKERS=50
-export GAMES_PER_EVAL_WORKER=2
+export GAMES_PER_EVAL_WORKER=4
 export STOCKFISH_WORKERS=100
 export STOCKFISH_GAMES=200
 

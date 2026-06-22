@@ -6,10 +6,9 @@
 #   First time:  mkdir -p chess_ai/logs
 #   Run:         sbatch chess_ai/carc_eval.slurm        (from repo root)
 #
-# REQUIRES these checkpoint files to exist on CARC (push from laptop if missing):
-#   chess_ai/game_engine/model/pretrained.pth          (original Lichess net; or use pretrained_anchor.pth)
-#   chess_ai/game_engine/model/best_model_iter3.bak    (already staged)
-#   chess_ai/game_engine/model/candidate_iter18.pth    (push it — CARC's candidate.pth was overwritten)
+# Checkpoints are auto-synced from Google Drive at setup (step 0b) into
+#   chess_ai/game_engine/model/ — set GDRIVE_MODELS_FOLDER + PLAYERS to match the
+#   filenames in that shared Drive folder. No manual scp needed.
 # Pure measurement: does NOT touch best_model / metrics.json / the loop.
 # ==============================================================================
 
@@ -27,7 +26,10 @@
 set -euo pipefail
 
 # ---- EDIT players here (name:path, comma-separated; paths relative to repo root) ----
-PLAYERS="pretrained:game_engine/model/pretrained.pth,iter3:game_engine/model/best_model_iter3.bak,iter18:game_engine/model/candidate_iter18.pth"
+# Names must match files in the Drive folder (step 0b): best_model.pth, candidate.pth,
+# pretrained.pth, pretrained_anchor.pth, swa_model.pth. Default rates the current run:
+# the iter-9 champion vs the rejected iter-10 candidate vs the pretrained base.
+PLAYERS="pretrained:game_engine/model/pretrained.pth,champion:game_engine/model/best_model.pth,candidate:game_engine/model/candidate.pth"
 GAMES=184        # per pairing (= 92 workers × 2 games each)
 RR_WORKERS=92    # SERVER-MODE: workers are CPU procs routing to shared GPU model-servers (2 copies
                  # max on the GPU, like the training loop) → 92 is cheap, no OOM. Server batch auto =
@@ -76,6 +78,23 @@ if ! ls "$GAME"/mcts_engine_cpp*.so >/dev/null 2>&1; then
   ( cd "$GAME/build" && cmake -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE="$(which python3)" -Dpybind11_DIR="$PB" .. && make -j"$(nproc)" )
   cp "$GAME"/build/mcts_engine_cpp*.so "$GAME/"
 fi
+
+# ---------------------------------------------------------------------------
+# 0b. Sync the latest model checkpoints from Google Drive (so CARC rates the
+#     current run's nets without a manual scp). The Drive folder must be shared
+#     ("anyone with the link") and contain the .pth/.bak files named in PLAYERS.
+# ---------------------------------------------------------------------------
+GDRIVE_MODELS_FOLDER="https://drive.google.com/drive/folders/1J_cfNiIusiVMhUjTZ0rI80gpKo3XEu_u"
+python3 -c "import gdown" 2>/dev/null || python3 -m pip install --user --quiet gdown
+mkdir -p "$GAME/model"
+STAGE="$(mktemp -d -p "$HOME")"
+echo "[gdown] syncing checkpoints from $GDRIVE_MODELS_FOLDER → $GAME/model"
+gdown --folder "$GDRIVE_MODELS_FOLDER" -O "$STAGE"
+# find-copy handles gdown's possible subfolder nesting; overwrites stale copies, never deletes.
+find "$STAGE" -type f \( -name '*.pth' -o -name '*.bak' \) -exec cp -fv {} "$GAME/model/" \;
+rm -rf "$STAGE"
+echo "[gdown] model dir now holds:"; ls -la "$GAME/model"/*.pth "$GAME/model"/*.bak 2>/dev/null \
+  || echo "[gdown] WARNING: no .pth/.bak fetched — check the folder is shared + PLAYERS names match"
 
 # VERIFY (quit to .err on failure) — deps + cuda + stockfish + .so + bayeselo + checkpoint files
 python3 - "$STOCKFISH_PATH" "$CHESS_AI/BayesElo/bayeselo" "$PLAYERS" <<'PY' || { echo "[verify] FAILED — aborting." >&2; exit 1; }

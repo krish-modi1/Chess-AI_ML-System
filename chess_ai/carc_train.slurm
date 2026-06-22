@@ -18,15 +18,15 @@
 #SBATCH --account=saifhash_1190         # CARC project allocation
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:a100:1               # or gpu:1 / gpu:a40:1  (check: sinfo -o "%P %G")
-#SBATCH --cpus-per-task=48              # self-play CPU workers + training dataloaders scale to this
+#SBATCH --cpus-per-task=96              # self-play CPU workers + training dataloaders scale to this
 #SBATCH --mem=128G
-#SBATCH --time=14:00:00                 # generous for 3 iters; raise to partition max if needed
+#SBATCH --time=48:00:00                 # generous for 3 iters; raise to partition max if needed
 #SBATCH --signal=B:TERM@300             # SIGTERM 300s before time limit → graceful save
 #SBATCH --output=chess_ai/logs/carc_%x_%j.out
 #SBATCH --error=chess_ai/logs/carc_%x_%j.err
 
 set -euo pipefail
-ITERS_PER_JOB=5
+ITERS_PER_JOB=15
 
 # ---------------------------------------------------------------------------
 # 0. Paths
@@ -157,6 +157,26 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 5c. Seed model checkpoints from Google Drive (latest nets live there). Runs ONLY
+#     on the first job (no best_model.pth yet) or when SYNC_MODELS=1 — so a resuming
+#     job never clobbers CARC's own newer checkpoints. Folder must be shared.
+# ---------------------------------------------------------------------------
+GDRIVE_MODELS_FOLDER="https://drive.google.com/drive/folders/1J_cfNiIusiVMhUjTZ0rI80gpKo3XEu_u"
+if [[ ! -f "$GAME/model/best_model.pth" ]] || [[ "${SYNC_MODELS:-0}" == "1" ]]; then
+  echo "[gdown] seeding checkpoints from Drive → $GAME/model"
+  python3 -c "import gdown" 2>/dev/null || python3 -m pip install --user --quiet gdown
+  mkdir -p "$GAME/model"
+  STAGE="$(mktemp -d -p "$HOME")"
+  gdown --folder "$GDRIVE_MODELS_FOLDER" -O "$STAGE"
+  # find-copy handles gdown's folder nesting; overwrites stale copies, never deletes.
+  find "$STAGE" -type f \( -name '*.pth' -o -name '*.bak' \) -exec cp -fv {} "$GAME/model/" \;
+  rm -rf "$STAGE"
+  ls -la "$GAME/model"/*.pth 2>/dev/null || echo "[gdown] WARNING: no .pth fetched — check folder is shared"
+else
+  echo "[gdown] best_model.pth present — skipping Drive sync (SYNC_MODELS=1 to force-refresh)."
+fi
+
+# ---------------------------------------------------------------------------
 # 6. Hyperparameters + cap this job to 3 fresh iterations (from run_state.json)
 # ---------------------------------------------------------------------------
 # hyperparams.env.sh needs these set BEFORE sourcing (VRAM tier + worker counts).
@@ -165,34 +185,46 @@ export VRAM_MIB="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nou
 set -a; source "$GAME/hyperparams.env.sh"; set +a
 export PYTHONPATH="$GAME${PYTHONPATH:+:$PYTHONPATH}"
 
-# A100-80GB overrides (after sourcing so they win over hyperparams defaults):
-# bigger training batches + more dataloaders/prefetch (4× the VRAM of the L4 these defaults were sized for).
-export TRAIN_BATCH_SIZE=4096
+# ─── A100 + CARC calibration (overrides win over hyperparams defaults) ──────────────────────────
+# Training batch leverages the A100 but is VRAM-adaptive: --gres=gpu:a100 may land a 40GB OR 80GB
+# card, and 4096 OOMs below ~80GB (Vast's 24GB card OOM'd at 4096 → 2048). Sized off detected VRAM.
+if   (( VRAM_MIB >= 70000 )); then export TRAIN_BATCH_SIZE=4096
+elif (( VRAM_MIB >= 38000 )); then export TRAIN_BATCH_SIZE=2048
+else                               export TRAIN_BATCH_SIZE=1024; fi
 export TRAIN_DL_WORKERS=32
 export TRAIN_DL_PREFETCH=8
 
-# Self-play scaling for the 48-core / A100-80GB node. NUM_WORKERS overrides hyperparams'
-# hard-coded 60; CUDA_BATCH_SIZE MUST be recomputed to NUM_WORKERS×WORKER_BATCH_SIZE (capped
-# by VRAM_CAP) or the inference server stalls 1s/round. 92×10 games = 920 games/iter.
+# Self-play scaling for the 48-core / A100 node. NUM_WORKERS overrides hyperparams' hard-coded 60;
+# CUDA_BATCH_SIZE MUST be recomputed to NUM_WORKERS×WORKER_BATCH_SIZE (capped by VRAM_CAP) or the
+# inference server stalls 1s/round (Vast lesson). 92×10 games = 920 games/iter.
 export NUM_WORKERS=92
+export RESERVED_CORES=4            # keep the GPU-feeder off the worker cores (Vast: avoids the deadlock-self-kill)
+export CUDA_TIMEOUT_INFERENCE=0.02 # Vast-tuned best; self-play is latency-bound, shorter timeout = more leaves/s
 CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))
 (( CUDA_BATCH_SIZE > VRAM_CAP )) && CUDA_BATCH_SIZE=$VRAM_CAP
 export CUDA_BATCH_SIZE
 
-# Eval scaling: 92 workers × 2 games = 184 games for BOTH arena and Stockfish (2/worker keeps
-# per-worker color balance: 1 White + 1 Black). 92 workers also matches CUDA_BATCH_SIZE (92×8=736).
+# Vast-parity fixes that hyperparams.env.sh's stale (iter-3-rollback-era) defaults would otherwise
+# undo — without these the opening collapse partly returns and the data window is wrong:
+export TEMP_MOVES=16              # restore the 16-ply temperature window (hyperparams halved it to 8)
+export MAX_WORKER_LEAD=3          # tighter game-lead spread → less iter-end tail-idle
+export TRAIN_MIN_ITER=0           # keep ALL self-play data (default 8 drops the clean post-restart iters)
+export TRAIN_FROM_LINEAGE=1       # continue training from candidate.pth (AZ-2017), matches the Vast run
+# Opening book (USE_OPENING_BOOK defaults to 1) forces 20 diverse openings — the core diversity fix.
+
+# Eval scaling: 92 workers × 2 games = 184 arena games (2/worker = 1 White + 1 Black, color-balanced).
 export EVAL_WORKERS=92
 export GAMES_PER_EVAL_WORKER=2
 export STOCKFISH_WORKERS=92
-export STOCKFISH_GAMES=184
-# Measure absolute strength EVERY iter (free compute on CARC; the carried-forward 1222 is a stale
-# pre-rollback ghost — this seeds a real SF-1600 Elo trend). SF-1600 ≈ the model's strength → scores
-# land near 50% → most sensitive BayesElo estimate.
-export STOCKFISH_EVERY_ITER=1
-# A_low anchor (anchors.json): UCI_Elo 1320 + fixed nodes 100000 → per-iter Elo on the SAME
-# reproducible scale as the round-robin ladder. SF-1600 was the noise floor (model scored 0.5%).
-export STOCKFISH_ELO=1320
-export STOCKFISH_NODES=100000
+export STOCKFISH_GAMES=200
+# Elo ONLY on promotion (EVERY_ITER=0): a rejected iter leaves best_model unchanged, so re-measuring
+# burns 200 games + adds CI noise to a flat trend (the Vast decision once BayesElo became reliable).
+export STOCKFISH_EVERY_ITER=0
+# Anchor: SF-2800 (the proven Vast value — gave a clean champion Elo 2422±32, cross-confirmed). The
+# ~2422 champion scores ~8% here; low WR but BayesElo rates it fine and it leaves headroom as the net
+# climbs toward 2800. (SF-1320 would be a 100% sweep → BayesElo can't rate it.) NODES=0 = UCI time control.
+export STOCKFISH_ELO=2800
+export STOCKFISH_NODES=0
 
 START_ITER=$(python3 - "$CHESS_AI" <<'PY'
 import json, os, sys
