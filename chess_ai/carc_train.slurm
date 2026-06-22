@@ -18,7 +18,7 @@
 #SBATCH --account=saifhash_1190         # CARC project allocation
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:a100:1               # or gpu:1 / gpu:a40:1  (check: sinfo -o "%P %G")
-#SBATCH --cpus-per-task=96              # self-play CPU workers + training dataloaders scale to this
+#SBATCH --cpus-per-task=64              # self-play CPU workers + training dataloaders scale to this
 #SBATCH --mem=148G
 #SBATCH --time=48:00:00                 # generous for 3 iters; raise to partition max if needed
 #SBATCH --signal=B:TERM@300             # SIGTERM 300s before time limit → graceful save
@@ -194,15 +194,15 @@ else                               export TRAIN_BATCH_SIZE=1024; fi
 export TRAIN_DL_WORKERS=32
 export TRAIN_DL_PREFETCH=8
 
-# Self-play scaling for the requested 96-core / A100 node. 184 workers ≈ 2× the 96 cores — deliberate
-# oversubscription so the latency-bound search keeps the A100's inference queue full (Vast finding:
-# self-play is round-trip-bound, more producers fill the batch). If SLURM only grants 48 cores it's
-# 4× — still runs (workers block on GPU), just more CPU contention. NUM_WORKERS overrides hyperparams'
-# 60; CUDA_BATCH_SIZE MUST be recomputed to NUM_WORKERS×WORKER_BATCH_SIZE (capped by VRAM_CAP) or the
-# inference server stalls 1s/round (Vast lesson). 184 workers × 10 games = 1840 games/iter.
-export NUM_WORKERS=184
+# Self-play scaling for the 64-core / A100 node (96/node wasn't satisfiable on the gpu partition).
+# 120 workers ≈ 2× the 64 cores — deliberate oversubscription so the latency-bound search keeps the
+# A100's inference queue full (Vast finding: self-play is round-trip-bound, more producers fill the
+# batch). NUM_WORKERS overrides hyperparams' 60; CUDA_BATCH_SIZE MUST be recomputed to
+# NUM_WORKERS×WORKER_BATCH_SIZE (capped by VRAM_CAP) or the inference server stalls 1s/round (Vast
+# lesson). 120 workers × 10 games = 1200 games/iter.
+export NUM_WORKERS=120
 export GAMES_PER_WORKER=10         # self-play games each worker plays per iteration (pinned; matches hyperparams)
-export RESERVED_CORES=4            # reserve 4 of 96 for the GPU-feeder threads (Vast parity; avoids deadlock-self-kill)
+export RESERVED_CORES=4            # reserve 4 of 64 for the GPU-feeder threads (Vast parity; avoids deadlock-self-kill)
 export CUDA_TIMEOUT_INFERENCE=0.02 # Vast-tuned best; self-play is latency-bound, shorter timeout = more leaves/s
 CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))
 (( CUDA_BATCH_SIZE > VRAM_CAP )) && CUDA_BATCH_SIZE=$VRAM_CAP
