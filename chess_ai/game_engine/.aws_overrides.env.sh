@@ -50,9 +50,9 @@ export GAMES_PER_EVAL_WORKER=2
 export STOCKFISH_WORKERS=100
 export STOCKFISH_GAMES=200
 
-# Elo anchor — time-based UCI_Elo=2100 (NODES=0). iter-5 scored 94% vs SF-1800 (BayesElo 2294±42),
-# nearly a sweep → wide bars. 2100 ∈ SF-16 spec [1320,3190] (verified live: UCI_LimitStrength+UCI_Elo
-# applies, no silent default) → puts a ~2294 model at ~75%, a tight readable band. Raise again as it climbs.
+# Elo anchor — time-based UCI_Elo=2300 (NODES=0). iter-6 champion measured 2392 vs SF-2100 (80% =
+# getting toward the wide-CI end). 2300 puts a 2392 model at ~63% — tighter measurement + ~200 Elo
+# headroom before it re-sweeps. 2300 ∈ SF-16 spec [1320,3190] (configure verified). Raise as it climbs.
 export STOCKFISH_EVERY_ITER=1
-export STOCKFISH_ELO=2100
+export STOCKFISH_ELO=2800
 export STOCKFISH_NODES=0
