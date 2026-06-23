@@ -4,8 +4,9 @@
 # Installs deps → verifies (quits to .err on failure) → builds the C++ ext →
 # runs EXACTLY 3 AlphaZero iterations, with GCP-identical outputs.
 #
-#   First time:   mkdir -p chess_ai/logs
-#   Every batch:  sbatch chess_ai/carc_train.slurm     (run from the repo root)
+#   First time:  mkdir -p chess_ai/logs
+#   Every batch: sbatch chess_ai/carc_train.slurm     (run from the repo root)
+#   Lands on an a100 or a40 — whichever frees first (see --constraint below).
 #
 # Why everything is in the job: CARC is batch-only — login-node setup does NOT
 # carry to the compute node, so install + build + run must all happen here.
@@ -17,16 +18,17 @@
 #SBATCH --job-name=chess-az
 #SBATCH --account=saifhash_1190         # CARC project allocation
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:1               # or gpu:1 / gpu:a40:1  (check: sinfo -o "%P %G")
+#SBATCH --gres=gpu:1                     # 1 GPU; type chosen by --constraint
+#SBATCH --constraint="[a100|a40]"        # a100 OR a40, whichever frees first (OR needs --constraint, not --gres)
 #SBATCH --cpus-per-task=64              # self-play CPU workers + training dataloaders scale to this
 #SBATCH --mem=96G
-#SBATCH --time=12:00:00                 # generous for 3 iters; raise to partition max if needed
-#SBATCH --signal=B:TERM@300             # SIGTERM 300s before time limit → graceful save
+#SBATCH --time=24:00:00                 # generous for 3 iters; raise to partition max if needed
+#SBATCH --signal=B:TERM@3600             # SIGTERM 300s before time limit → graceful save
 #SBATCH --output=chess_ai/logs/carc_%x_%j.out
 #SBATCH --error=chess_ai/logs/carc_%x_%j.err
 
 set -euo pipefail
-ITERS_PER_JOB=4
+ITERS_PER_JOB=10
 
 # ---------------------------------------------------------------------------
 # 0. Paths
