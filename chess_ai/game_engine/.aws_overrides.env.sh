@@ -30,7 +30,7 @@ export MAX_WORKER_LEAD=3
 # Training: batch 2048 — fits the 24GB card (4096 OOMs at ~22GB here; that was a 48GB-only setting).
 # 50 DL workers × prefetch 2. Genoa box has 193GB RAM so DL/RAM is never the limit.
 export TRAIN_BATCH_SIZE=2048
-export TRAIN_DL_WORKERS=50
+export TRAIN_DL_WORKERS=90
 export TRAIN_DL_PREFETCH=2
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
