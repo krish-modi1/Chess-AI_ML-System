@@ -71,6 +71,25 @@ export STOCKFISH_NODES=0
 ENV
 export EXTRA_ENV="$OVR"
 
+# Seed model checkpoints from Google Drive on a FRESH box (models are gitignored; a new Vast
+# instance has the code + self-play data from git but no .pth). Guarded: only runs if best_model
+# is missing, or force with SYNC_MODELS=1. Continues even if gdown fails (manual scp fallback).
+MODEL_DIR="$HERE/model"
+if [[ ! -f "$MODEL_DIR/best_model.pth" || "${SYNC_MODELS:-0}" == "1" ]]; then
+  echo "[aws] seeding models from Drive (best_model.pth missing or SYNC_MODELS=1) ..."
+  python3 -c "import gdown" 2>/dev/null || python3 -m pip install --user --quiet gdown
+  STAGE="$(mktemp -d)"
+  if gdown --folder "https://drive.google.com/drive/folders/1J_cfNiIusiVMhUjTZ0rI80gpKo3XEu_u" -O "$STAGE"; then
+    mkdir -p "$MODEL_DIR"
+    find "$STAGE" -type f \( -name '*.pth' -o -name '*.bak' \) -exec cp -fv {} "$MODEL_DIR/" \;
+  else
+    echo "[aws] WARNING: gdown failed — scp the .pth files into $MODEL_DIR manually." >&2
+  fi
+  rm -rf "$STAGE"
+else
+  echo "[aws] models present ($MODEL_DIR/best_model.pth) — skipping Drive seed."
+fi
+
 # FD limit — 120 self-play / 64 eval workers × shared servers exhaust the default (~1024) and FDs
 # accumulate across iterations (the iter-21 "[Errno 24] Too many open files" crash). Raise to max.
 ulimit -n 1048576 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
