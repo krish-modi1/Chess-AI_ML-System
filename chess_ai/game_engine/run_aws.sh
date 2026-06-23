@@ -9,12 +9,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # --- Vast 4090-24GB / 64-core config (sourced after hyperparams via the EXTRA_ENV hook) ---
 OVR="$HERE/.aws_overrides.env.sh"
 cat > "$OVR" <<'ENV'
-# Self-play: 280 workers on the Genoa box — 24GB VRAM, EPYC 9654P (Zen4), 96 cores, ~148GB RAM.
-#   MEASURED at 200w: sm ~72% avg (100% peaks), [server-batch] ~500/1600 @ 100% timeout (queue-STARVED),
-#   load only 15/96 (CPU idle). Same starved+idle corner as Romania → more producers fill the batch.
-#   NEW CEILING IS RAM, not cores: ~0.4GB/worker → 280w ≈ 115GB + ~11GB/iter creep ≈ 126GB peak, ~22GB
-#   margin on 148GB (NO SWAP — do NOT exceed ~300). CUDA_BATCH=280×8=2240 (< VRAM_CAP 16000, inference
-#   fits 24GB easily). Watch free -g <130. Latency-bound — see [[selfplay-gpu-bottleneck]].
+# Self-play on the Genoa box (24GB 4090, EPYC 9654P Zen4 96c, 148GB RAM). RAM IS THE HARD CAP.
+#   MEASURED REALITY: ~0.78GB/worker incl SHM. 182w crept past 148GB and got OOM-KILLED mid iter-16
+#   (the old "0.4GB/worker → 280 safe" estimate was WRONG — that's what caused the OOM). 160w ≈ 125GB
+#   steady → ~23GB margin. Do NOT exceed ~165 here (NO SWAP); watch `free -g`. If it still creeps to
+#   OOM over a long run, the per-iteration RAM creep needs a real fix (or a periodic restart).
+#   GPU stays queue-starved (latency-bound, sm~72%) but RAM, not the GPU, is the ceiling on this box.
+#   CUDA_BATCH auto = NUM_WORKERS×8 (< VRAM_CAP 16000, fits 24GB easily). [[selfplay-gpu-bottleneck]]
 export NUM_WORKERS=160
 # Reserve 8 of the 96 cores for the GPU-feeding inference server (1 gather + ~6 stream executors).
 # The server feed isn't the bottleneck (gather sits ~14% idle), but keeping it off the worker cores
