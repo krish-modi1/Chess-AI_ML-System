@@ -15,7 +15,7 @@ cat > "$OVR" <<'ENV'
 #   NEW CEILING IS RAM, not cores: ~0.4GB/worker → 280w ≈ 115GB + ~11GB/iter creep ≈ 126GB peak, ~22GB
 #   margin on 148GB (NO SWAP — do NOT exceed ~300). CUDA_BATCH=280×8=2240 (< VRAM_CAP 16000, inference
 #   fits 24GB easily). Watch free -g <130. Latency-bound — see [[selfplay-gpu-bottleneck]].
-export NUM_WORKERS=182
+export NUM_WORKERS=160
 # Reserve 8 of the 96 cores for the GPU-feeding inference server (1 gather + ~6 stream executors).
 # The server feed isn't the bottleneck (gather sits ~14% idle), but keeping it off the worker cores
 # avoids the deadlock-timeout-self-kill failure mode. Workers get the remaining 88.
