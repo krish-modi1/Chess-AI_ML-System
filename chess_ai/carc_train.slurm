@@ -19,14 +19,14 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:a100:1               # or gpu:1 / gpu:a40:1  (check: sinfo -o "%P %G")
 #SBATCH --cpus-per-task=64              # self-play CPU workers + training dataloaders scale to this
-#SBATCH --mem=128G
-#SBATCH --time=24:00:00                 # generous for 3 iters; raise to partition max if needed
+#SBATCH --mem=96G
+#SBATCH --time=12:00:00                 # generous for 3 iters; raise to partition max if needed
 #SBATCH --signal=B:TERM@300             # SIGTERM 300s before time limit → graceful save
 #SBATCH --output=chess_ai/logs/carc_%x_%j.out
 #SBATCH --error=chess_ai/logs/carc_%x_%j.err
 
 set -euo pipefail
-ITERS_PER_JOB=8
+ITERS_PER_JOB=4
 
 # ---------------------------------------------------------------------------
 # 0. Paths
