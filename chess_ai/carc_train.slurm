@@ -2,7 +2,7 @@
 # ==============================================================================
 # carc_train.slurm — ONE self-contained SLURM job for USC CARC.
 # Installs deps → verifies (quits to .err on failure) → builds the C++ ext →
-# runs EXACTLY 3 AlphaZero iterations, with GCP-identical outputs.
+# runs EXACTLY 10 AlphaZero iterations, with GCP-identical outputs.
 #
 #   First time:  mkdir -p chess_ai/logs
 #   Every batch: sbatch chess_ai/carc_train.slurm     (run from the repo root)
@@ -23,7 +23,7 @@
 #SBATCH --cpus-per-task=64              # self-play CPU workers + training dataloaders scale to this
 #SBATCH --mem=96G
 #SBATCH --time=24:00:00                 # generous for 3 iters; raise to partition max if needed
-#SBATCH --signal=B:TERM@3600             # SIGTERM 300s before time limit → graceful save
+#SBATCH --signal=B:TERM@3600             # SIGTERM 3600s before time limit → graceful save
 #SBATCH --output=chess_ai/logs/carc_%x_%j.out
 #SBATCH --error=chess_ai/logs/carc_%x_%j.err
 
