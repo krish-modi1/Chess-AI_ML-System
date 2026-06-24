@@ -449,5 +449,32 @@
     "search_override": 38.4,
     "search_top1": 61.6,
     "search_dentropy": 0.04
+  },
+  {
+    "iteration": 20,
+    "timestamp": "2026-06-24T18:58:14.559689",
+    "policy_loss": 1.2400729572697051,
+    "value_loss": 0.5772989139815045,
+    "arena_win_rate": 0.3758620689655172,
+    "model_elo": 2438.0,
+    "elo_measured": false,
+    "stockfish_elo": 2800,
+    "val_policy_loss": 1.2551,
+    "val_value_loss": 0.5791,
+    "train_acc": 64.1,
+    "val_acc": 63.8,
+    "kl_anchor": 0.0847,
+    "grad_norm": 0.35,
+    "value_acc_cand": 74,
+    "value_acc_champ": 73,
+    "value_acc_gap": 1,
+    "value_meanv_cand": 0.567,
+    "value_decisive_cand": 31,
+    "value_meanv_champ": 0.539,
+    "value_decisive_champ": 29,
+    "search_kl": 0.413,
+    "search_override": 41.5,
+    "search_top1": 58.5,
+    "search_dentropy": 0.05
   }
 ]
