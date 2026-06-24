@@ -82,6 +82,9 @@ C = {
 # ----------------------------------------------------------------------------
 INTERVENTIONS = [
     {"iter": 17, "label": "LR 1e-4→3e-4", "panels": "all"},
+    # Reference reset: KL anchor pretrained-1800 → live champion. Set "iter" to the FIRST iteration
+    # whose training log shows "KL anchor = CHAMPION" (adjust if it ships at a different iter than 22).
+    {"iter": 22, "label": "anchor→champion", "panels": {"kl", "elo", "winrate", "loss"}},
     # When the KL-anchor β is changed, add e.g.:
     # {"iter": <N>, "label": "KL β 1.0→0.5", "panels": {"kl", "elo", "loss"}},
 ]
@@ -176,11 +179,18 @@ def _mark_interventions(ax, key):
         panels = iv.get("panels", "all")
         if panels != "all" and key not in panels:
             continue
-        ax.axvline(iv["iter"], color=C["marker"], ls=(0, (4, 3)), lw=1.3,
-                   alpha=0.8, zorder=1.5)
-        ax.text(iv["iter"], 1.0, f" {iv['label']}", transform=ax.get_xaxis_transform(),
-                rotation=90, va="top", ha="left", fontsize=6.5, color=C["marker"],
-                alpha=0.95, zorder=6)
+        x = iv["iter"]
+        ax.axvline(x, color=C["marker"], ls=(0, (4, 3)), lw=1.2, alpha=0.7, zorder=1.5)
+        # Put the label on whichever side of the line has more room (left of the line when it sits in
+        # the right third of the x-range, else right), and give it an opaque white box so it reads as
+        # a clean tag over data/gridlines/annotations instead of tangling with them.
+        xmin, xmax = ax.get_xlim()
+        on_right = x > xmin + 0.6 * (xmax - xmin)
+        ax.text(x, 0.985, iv["label"], transform=ax.get_xaxis_transform(),
+                rotation=90, va="top", ha=("right" if on_right else "left"),
+                fontsize=6, color=C["marker"], zorder=7,
+                bbox=dict(boxstyle="round,pad=0.22", fc="white", ec=C["marker"],
+                          lw=0.5, alpha=0.9))
 
 
 def _int_xaxis(ax, it, mark=None):

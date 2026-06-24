@@ -133,7 +133,14 @@ export TRAIN_LR=3e-4           # PLATEAU LEVER (iter-16): back UP from 1e-4. At 
                               # override ~40%, KL(MCTS‖net)~0.5, yet cand‖champ KL only ~0.003). 3e-4
                               # (the code default) = bigger steps toward the MCTS targets. Watch GNorm
                               # + val loss for instability the first iter; revert to 1e-4 if it spikes.
-export KL_ANCHOR_BETA=1.0      # KL(pretrained prior ‖ candidate) anti-forgetting penalty; 0 disables
+export KL_ANCHOR_BETA=1.0      # KL(reference ‖ candidate) penalty weight; 0 disables. Kept at 1.0 — the
+                              # change this round is the REFERENCE, not β, for clean attribution.
+# REFERENCE RESET (iter-22): anchor the KL reference to the LIVE champion instead of the stale 1800
+# prior. The net is ~2438 — anchoring to 1800 was pulling it back toward beginner play (accuracy rose
+# but it couldn't out-diverge the champion to win → no promotions). Anchoring to current strong play
+# lets it specialize past 1800. Grounded in RLHF reward-KL frontier (Gao 2023) + reference-reset
+# (arXiv 2510.01555). Flip to 0 to revert to the pretrained-1800 anchor.
+export KL_ANCHOR_TO_CHAMPION=1
 export MIN_TRAIN_ITERS=3       # self-play only until this many iterations of data exist, then train
 export DRAW_MAX_POSITIONS=0        # subsumed by MAX_POSITIONS_PER_GAME below
 export MAX_POSITIONS_PER_GAME=20   # cap EVERY game to 20 positions (value-target decorrelation, AlphaGo Nature'16).

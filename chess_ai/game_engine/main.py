@@ -1148,19 +1148,27 @@ def run_training_phase(iteration):
             if free_gb < target_gb:
                 print(f"  ⚠️ VRAM did not drain after 120s — proceeding ({free_gb:.1f} GB free)")
     
-    # Frozen KL-anchor reference = a one-time pretrained snapshot. best_model is pretrained until the
-    # first promotion, so capture it now (before any 0.50-gate promotion can change it).
+    # KL-anchor reference. DEFAULT = a one-time frozen pretrained snapshot (anti-forgetting toward the
+    # Lichess-1800 prior). best_model is pretrained until the first promotion, so capture it now.
     pretrained_anchor = f"{MODEL_DIR}/pretrained_anchor.pth"
     if not os.path.exists(pretrained_anchor):
         shutil.copy(BEST_MODEL, pretrained_anchor)
         print(f"  Captured frozen KL-anchor reference → {pretrained_anchor}")
 
+    # KL_ANCHOR_TO_CHAMPION=1 → "reference reset" (Rethinking KL Regularization, arXiv 2510.01555):
+    # re-point the anchor at the LIVE champion (best_model) instead of the stale 1800 prior, so the KL
+    # penalty regularizes toward CURRENT strong play and the candidate can specialize past 1800 to beat
+    # the champion. The champion updates on each promotion, so the reference resets with progress.
+    anchor_to_champion = os.environ.get("KL_ANCHOR_TO_CHAMPION", "0") == "1"
+    anchor_path = BEST_MODEL if anchor_to_champion else pretrained_anchor
+
     # Train-from-lineage: build on the latest candidate (continual), not the frozen champion, so
-    # gains compound. Anchor stays pinned to pretrained for stability.
+    # gains compound.
     train_base = BEST_MODEL
     if TRAIN_FROM_LINEAGE and os.path.exists(CANDIDATE_MODEL):
         train_base = CANDIDATE_MODEL
-        print(f"  Train-from-lineage: base = candidate.pth (anchor pinned to pretrained)")
+        _anc = "CHAMPION (best_model) [reference-reset]" if anchor_to_champion else "pretrained-1800"
+        print(f"  Train-from-lineage: base = candidate.pth  |  KL anchor = {_anc}")
 
     p_loss, v_loss, train_metrics = train_model(data_path=DATA_DIR,
                 input_model_path=train_base,
@@ -1170,7 +1178,7 @@ def run_training_phase(iteration):
                 lr=TRAIN_LR,
                 window_size=TRAIN_WINDOW,
                 total_iterations=ITERATIONS,
-                anchor_model_path=pretrained_anchor)
+                anchor_model_path=anchor_path)
 
     _update_swa()
     return p_loss, v_loss, train_metrics
