@@ -595,7 +595,7 @@ current_iter = get_start_iteration(DATA_DIR) - 1
 
 # Training
 TRAIN_EPOCHS = int(os.environ.get("TRAIN_EPOCHS", 4))
-TRAIN_WINDOW = int(os.environ.get("TRAIN_WINDOW", 20))   # train on the last 20 iterations' self-play data
+TRAIN_WINDOW = int(os.environ.get("TRAIN_WINDOW", 50))   # train on the last 50 iterations' self-play data
 # Train-from-lineage (AlphaZero continual): each iter builds on the latest candidate, not the frozen
 # champion, so gains accumulate in the weights. Anchor stays pinned to a frozen pretrained snapshot.
 TRAIN_FROM_LINEAGE = os.environ.get("TRAIN_FROM_LINEAGE", "0") == "1"
