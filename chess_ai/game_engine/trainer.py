@@ -445,6 +445,19 @@ def train_model(data_path="data/self_play",
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if 'scheduler_state_dict' in checkpoint:
                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                # The restored optimizer + scheduler state PIN the LR to last run's value: the
+                # param-group lr AND the cosine's base_lrs are both saved state. So changing TRAIN_LR
+                # (e.g. raising it to break a plateau) silently has NO effect — base_lrs stays old and
+                # scheduler.step() keeps recomputing from it. Detect a changed TRAIN_LR and rebase the
+                # cosine to it, keeping the restored progress (last_epoch) + AdamW momentum buffers.
+                if any(abs(b - lr) > 1e-12 for b in scheduler.base_lrs):
+                    scheduler.base_lrs = [lr for _ in scheduler.base_lrs]
+                    cur = scheduler.eta_min + (lr - scheduler.eta_min) * \
+                          (1 + np.cos(np.pi * scheduler.last_epoch / scheduler.T_max)) / 2
+                    for pg in optimizer.param_groups:
+                        pg['lr'] = cur
+                    scheduler._last_lr = [cur for _ in optimizer.param_groups]
+                    print(f"  ⚙️  TRAIN_LR changed → rebased cosine base to {lr:.1e}; current LR now {cur:.2e}")
                 print(f"Scheduler restored: step {scheduler.last_epoch}/{scheduler.T_max} | LR: {scheduler.get_last_lr()[0]:.2e}")
         except (ValueError, KeyError, RuntimeError) as e:
             print(f"  ⚠️ Fresh optimizer/scheduler (saved state incompatible — e.g. arch change): {e}")
