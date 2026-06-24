@@ -41,7 +41,7 @@ TOL    = 0.5
 
 
 def load_state():
-    ck = torch.load(MODEL, map_location="cpu", weights_only=True)
+    ck = torch.load(MODEL, map_location="cpu", weights_only=False)  # trusted self-ckpt; carries numpy metadata
     sd = ck.get("model_state_dict", ck.get("state_dict", ck))
     return {k.removeprefix("_orig_mod."): v for k, v in sd.items()}
 

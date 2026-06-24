@@ -124,7 +124,10 @@ class InferenceServer:
                            for _ in range(self.num_streams)]
         
         print(f"Server: Loading model from {self.model_path}")
-        checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=True)
+        # weights_only=False: these are the engine's OWN trusted checkpoints (self-generated), and
+        # they carry non-tensor metadata (e.g. numpy scalars in optimizer/scheduler state). Matches
+        # every other load site in the codebase; weights_only=True crashes on those globals.
+        checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
         state = checkpoint.get('model_state_dict', checkpoint.get('state_dict', checkpoint))
         if any(k.startswith('_orig_mod.') for k in state):
             state = {k.removeprefix('_orig_mod.'): v for k, v in state.items()}

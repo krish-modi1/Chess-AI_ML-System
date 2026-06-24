@@ -375,7 +375,7 @@ def train_model(data_path="data/self_play",
     if os.path.exists(input_model_path):
         print(f"Loading training base from {input_model_path}")
         try:
-            raw = torch.load(input_model_path, map_location=device)
+            raw = torch.load(input_model_path, map_location=device, weights_only=False)  # trusted self-ckpt; torch 2.6 default True crashes on numpy metadata
             if 'model_state_dict' in raw:
                 sd = raw['model_state_dict']
                 checkpoint = raw
@@ -402,7 +402,7 @@ def train_model(data_path="data/self_play",
                 anchor = ChessCNN().to(device)
                 a_path = anchor_model_path if (anchor_model_path and os.path.exists(anchor_model_path)) else None
                 if a_path:
-                    a_raw = torch.load(a_path, map_location=device)
+                    a_raw = torch.load(a_path, map_location=device, weights_only=False)  # trusted self-ckpt (see base load above)
                     a_sd = (a_raw.get('model_state_dict') or a_raw.get('state_dict') or a_raw) \
                         if isinstance(a_raw, dict) else a_raw
                     a_sd = {k.removeprefix('_orig_mod.'): v for k, v in a_sd.items()}
@@ -452,8 +452,12 @@ def train_model(data_path="data/self_play",
                 # cosine to it, keeping the restored progress (last_epoch) + AdamW momentum buffers.
                 if any(abs(b - lr) > 1e-12 for b in scheduler.base_lrs):
                     scheduler.base_lrs = [lr for _ in scheduler.base_lrs]
-                    cur = scheduler.eta_min + (lr - scheduler.eta_min) * \
-                          (1 + np.cos(np.pi * scheduler.last_epoch / scheduler.T_max)) / 2
+                    # float() is REQUIRED: np.cos returns np.float64, and a numpy scalar written into
+                    # the optimizer/scheduler state gets pickled into the checkpoint → torch.load(
+                    # weights_only=True) then rejects it ("Unsupported global numpy...scalar"). Keep it
+                    # a plain Python float so checkpoints stay weights_only-loadable.
+                    cur = float(scheduler.eta_min + (lr - scheduler.eta_min) *
+                                (1 + np.cos(np.pi * scheduler.last_epoch / scheduler.T_max)) / 2)
                     for pg in optimizer.param_groups:
                         pg['lr'] = cur
                     scheduler._last_lr = [cur for _ in optimizer.param_groups]
