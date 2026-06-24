@@ -128,7 +128,11 @@ export TRAIN_FROM_LINEAGE=0   # OFF for the iter-3 rollback: train each candidat
 export TEMP_MOVES=8           # was 16. Halve the random-opening window to keep self-play on-distribution.
 export TRAIN_EPOCHS=2          # 1→2: extract more from the decorrelated buffer (safe now that cap=20
                               # prevents the overfitting that 4 epochs caused at iter-1)
-export TRAIN_LR=1e-4           # was 3e-4 — gentler AdamW fine-tune
+export TRAIN_LR=3e-4           # PLATEAU LEVER (iter-16): back UP from 1e-4. At 1e-4 the policy froze —
+                              # it wasn't absorbing the ~0.5-nat MCTS target signal (search probe:
+                              # override ~40%, KL(MCTS‖net)~0.5, yet cand‖champ KL only ~0.003). 3e-4
+                              # (the code default) = bigger steps toward the MCTS targets. Watch GNorm
+                              # + val loss for instability the first iter; revert to 1e-4 if it spikes.
 export KL_ANCHOR_BETA=1.0      # KL(pretrained prior ‖ candidate) anti-forgetting penalty; 0 disables
 export MIN_TRAIN_ITERS=3       # self-play only until this many iterations of data exist, then train
 export DRAW_MAX_POSITIONS=0        # subsumed by MAX_POSITIONS_PER_GAME below
