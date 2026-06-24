@@ -68,7 +68,23 @@ C = {
     "grad": "#64748b",     # slate-600
     "champ": "#f97316",    # orange
     "cand": "#6366f1",     # indigo
+    "marker": "#6b7280",   # gray — intervention markers
 }
+
+# ----------------------------------------------------------------------------
+# Intervention registry — manual levers we pulled, marked on the plots so a
+# trajectory change is never mistaken for organic improvement (honesty first).
+#   iter   = the iteration at which the change first TOOK EFFECT
+#   label  = short caption drawn at the vertical line
+#   panels = "all" (every iteration-x-axis panel) or a set of panel keys
+#            ("elo","loss","acc","winrate","kl","search","value","grad")
+# Add a line here whenever a lever is pulled.
+# ----------------------------------------------------------------------------
+INTERVENTIONS = [
+    {"iter": 17, "label": "LR 1e-4→3e-4", "panels": "all"},
+    # When the KL-anchor β is changed, add e.g.:
+    # {"iter": <N>, "label": "KL β 1.0→0.5", "panels": {"kl", "elo", "loss"}},
+]
 
 
 def setup_style():
@@ -152,9 +168,26 @@ def parse(history):
     }
 
 
-def _int_xaxis(ax, it):
+def _mark_interventions(ax, key):
+    """Draw a vertical dashed line + rotated caption at each registered intervention
+    that targets this panel (panels=="all" or key in panels). Label rides the top of
+    the axes via the xaxis transform so it never collides with the data."""
+    for iv in INTERVENTIONS:
+        panels = iv.get("panels", "all")
+        if panels != "all" and key not in panels:
+            continue
+        ax.axvline(iv["iter"], color=C["marker"], ls=(0, (4, 3)), lw=1.3,
+                   alpha=0.8, zorder=1.5)
+        ax.text(iv["iter"], 1.0, f" {iv['label']}", transform=ax.get_xaxis_transform(),
+                rotation=90, va="top", ha="left", fontsize=6.5, color=C["marker"],
+                alpha=0.95, zorder=6)
+
+
+def _int_xaxis(ax, it, mark=None):
     ax.set_xticks(it)
     ax.set_xlabel("Iteration")
+    if mark is not None:
+        _mark_interventions(ax, mark)
 
 
 def _legend_below(ax, ax2=None, ncol=2):
@@ -216,7 +249,7 @@ def panel_elo(ax, H):
                         ha="center", fontsize=7, color="#64748b")
     ax.set_title("Elo Progression")
     ax.set_ylabel("Elo")
-    _int_xaxis(ax, it)
+    _int_xaxis(ax, it, "elo")
     _legend_below(ax, ncol=4)
 
 
@@ -236,7 +269,7 @@ def panel_loss(ax, H, which):
         ax.fill_between(it[both], tr[both], va[both], color=c, alpha=0.10)
     ax.set_title(f"{name} Loss (train vs val)")
     ax.set_ylabel("Loss")
-    _int_xaxis(ax, it)
+    _int_xaxis(ax, it, "loss")
     _legend_below(ax, ncol=2)
 
 
@@ -249,7 +282,7 @@ def panel_acc(ax, H):
             ms=4, label="Val acc")
     ax.set_title("Policy Top-1 Accuracy")
     ax.set_ylabel("Accuracy (%)")
-    _int_xaxis(ax, it)
+    _int_xaxis(ax, it, "acc")
     _legend_below(ax, ncol=2)
 
 
@@ -264,7 +297,7 @@ def panel_winrate(ax, H):
     ax.set_ylim(0, 1)
     ax.set_title("Arena Win Rate (candidate vs champion)")
     ax.set_ylabel("Win rate")
-    _int_xaxis(ax, it)
+    _int_xaxis(ax, it, "winrate")
     _legend_below(ax, ncol=1)
 
 
@@ -276,7 +309,7 @@ def panel_kl(ax, H):
     ax.set_title("KL-to-Reference  (anchor, β=1.0)")
     ax.set_ylabel("KL (nats)")
     ax.set_ylim(bottom=0)
-    _int_xaxis(ax, it)
+    _int_xaxis(ax, it, "kl")
     _legend_below(ax, ncol=1)
 
 
@@ -288,7 +321,7 @@ def panel_search(ax, H):
             label="MCTS override (%)")
     ax.set_title("Search vs Net (policy improvement)")
     ax.set_ylabel("%")
-    _int_xaxis(ax, it)
+    _int_xaxis(ax, it, "search")
     # KL(MCTS‖net) on a twin axis — different scale (nats).
     ax2 = ax.twinx()
     ax2.grid(False)
@@ -307,7 +340,7 @@ def panel_value_calib(ax, H):
             label="Value acc — champion (%)")
     ax.set_title("Value Head Calibration")
     ax.set_ylabel("Accuracy (%)")
-    _int_xaxis(ax, it)
+    _int_xaxis(ax, it, "value")
     ax2 = ax.twinx()
     ax2.grid(False)
     ax2.plot(it, H["dec_cand"], color=C["value"], lw=1.6, ls=":", marker="d", ms=3.5,
@@ -325,7 +358,7 @@ def panel_grad(ax, H):
     ax.set_title("Gradient Norm (stability)")
     ax.set_ylabel("‖grad‖")
     ax.set_ylim(bottom=0)
-    _int_xaxis(ax, it)
+    _int_xaxis(ax, it, "grad")
     _legend_below(ax, ncol=1)
 
 

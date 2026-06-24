@@ -372,8 +372,8 @@
   {
     "iteration": 17,
     "timestamp": "2026-06-24T05:34:29.273692",
-    "policy_loss": 0.0,
-    "value_loss": 0.0,
+    "policy_loss": 1.3032,
+    "value_loss": 0.598,
     "arena_win_rate": 0.5555555555555556,
     "model_elo": 2438.0,
     "elo_measured": true,
