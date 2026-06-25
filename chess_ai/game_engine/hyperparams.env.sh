@@ -77,10 +77,12 @@ export TRAIN_DL_WORKERS=16
 export TRAIN_DL_PREFETCH=4   # batches buffered per worker (local launchers set 1)
 
 # Loop / eval / rules — identical on all platforms.
-export SIMULATIONS=1200        # FULL/recorded search ("long" sims, 25% of moves → training targets).
-                              # REVERTED 1600→1200: the 1600 bump did NOT un-saturate — search_kl kept
-                              # FALLING to 0.338, so stronger RECORDED targets is not the bottleneck.
-                              # Investing in fast-search GAME quality instead (FAST_SIMULATIONS 200→400).
+export SIMULATIONS=2000        # FULL/recorded search ("long" sims, 25% of moves → training targets).
+                              # TEACHER-STRENGTH TEST (iter-28): big jump 1200→2000 to check if a clearly
+                              # stronger teacher can push the 2438 net past its ceiling. WATCH: search_kl
+                              # rising off ~0.35 + WR climbing = teacher was the bottleneck (keep pushing
+                              # sims); flat = capacity ceiling → then Net2Net-grow the net (local/plans/
+                              # net2net_grow.md). Fast dropped to 200 to keep compute ~flat (+8%/move).
 export EVAL_SIMULATIONS=800   # kept at 800 so arena/Stockfish-Elo stay comparable to the 1524 anchor
 
 # KataGo-style decided-game playout: once |P(win)-P(loss)| >= threshold for N consecutive
@@ -174,8 +176,8 @@ export CPUCT_FACTOR=1.0        # 3) PULLED BACK 2.0→1.0 (AlphaZero baseline). 
 export FORCED_PLAYOUT_K=0      # 4) PULLED BACK 2.0→0 (disabled). No effect on diffuseness, most-novel, and it
                                #    spreads visits (against the on-distribution thesis). See selfplay-offdistribution memory.
 export FULL_SEARCH_PROB=0.25    # 2) playout-cap: 25% of moves full+recorded, rest fast+unrecorded (Dirichlet off)
-export FAST_SIMULATIONS=400     #    fast-search ("short") sim count — 200→400: the 75% fast moves drive the
-                               #    game trajectory; stronger fast play = higher-quality positions in the data
+export FAST_SIMULATIONS=200     #    fast-search ("short") sim count — back to 200 to afford the 2000 full
+                               #    search (teacher test). Proven fine through iter-23; diversity stays healthy.
 export SWA_ENABLE=1             # 5) stochastic weight averaging → offline swa_model.pth (probe vs candidate)
 export SWA_DECAY=0.75
 # 6) aux weights above (AUX_W_*) — tune from the epoch-1 "aux (raw, pre-weight)" log, not a fixed change.
