@@ -77,9 +77,10 @@ export TRAIN_DL_WORKERS=16
 export TRAIN_DL_PREFETCH=4   # batches buffered per worker (local launchers set 1)
 
 # Loop / eval / rules — identical on all platforms.
-export SIMULATIONS=1600        # 1200→1600 for the 25% FULL (recorded) searches — sharper policy targets
-                              # to re-open the search-vs-net gap (search_probe was in "bump sims" regime:
-                              # KL 0.6, Δentropy≈0). Only ~8% slower self-play (playout-cap: 75% stay fast).
+export SIMULATIONS=1200        # FULL/recorded search ("long" sims, 25% of moves → training targets).
+                              # REVERTED 1600→1200: the 1600 bump did NOT un-saturate — search_kl kept
+                              # FALLING to 0.338, so stronger RECORDED targets is not the bottleneck.
+                              # Investing in fast-search GAME quality instead (FAST_SIMULATIONS 200→400).
 export EVAL_SIMULATIONS=800   # kept at 800 so arena/Stockfish-Elo stay comparable to the 1524 anchor
 
 # KataGo-style decided-game playout: once |P(win)-P(loss)| >= threshold for N consecutive
@@ -128,11 +129,11 @@ export TRAIN_FROM_LINEAGE=0   # OFF for the iter-3 rollback: train each candidat
 export TEMP_MOVES=8           # was 16. Halve the random-opening window to keep self-play on-distribution.
 export TRAIN_EPOCHS=2          # 1→2: extract more from the decorrelated buffer (safe now that cap=20
                               # prevents the overfitting that 4 epochs caused at iter-1)
-export TRAIN_LR=3e-4           # PLATEAU LEVER (iter-16): back UP from 1e-4. At 1e-4 the policy froze —
-                              # it wasn't absorbing the ~0.5-nat MCTS target signal (search probe:
-                              # override ~40%, KL(MCTS‖net)~0.5, yet cand‖champ KL only ~0.003). 3e-4
-                              # (the code default) = bigger steps toward the MCTS targets. Watch GNorm
-                              # + val loss for instability the first iter; revert to 1e-4 if it spikes.
+export TRAIN_LR=1.5e-4         # iter-24: LOWERED 3e-4→1.5e-4. 3e-4 OVER-optimized a mature net (~2438):
+                              # WR fell 0.556→0.246 over iters 17-23 (training metrics improved while arena
+                              # strength dropped = Goodhart/over-optimization). AZ's final LR was 2e-4,
+                              # KataGo 6e-5 — low LR for mature nets. 1.5e-4 sits between the 1e-4 that
+                              # froze the policy (pre-fix) and the 3e-4 that over-cooked it.
 export KL_ANCHOR_BETA=1.0      # KL(reference ‖ candidate) penalty weight; 0 disables. Kept at 1.0 — the
                               # change this round is the REFERENCE, not β, for clean attribution.
 # REFERENCE RESET (iter-22): anchor the KL reference to the LIVE champion instead of the stale 1800
@@ -173,7 +174,8 @@ export CPUCT_FACTOR=1.0        # 3) PULLED BACK 2.0→1.0 (AlphaZero baseline). 
 export FORCED_PLAYOUT_K=0      # 4) PULLED BACK 2.0→0 (disabled). No effect on diffuseness, most-novel, and it
                                #    spreads visits (against the on-distribution thesis). See selfplay-offdistribution memory.
 export FULL_SEARCH_PROB=0.25    # 2) playout-cap: 25% of moves full+recorded, rest fast+unrecorded (Dirichlet off)
-export FAST_SIMULATIONS=200     #    fast-search sim count
+export FAST_SIMULATIONS=400     #    fast-search ("short") sim count — 200→400: the 75% fast moves drive the
+                               #    game trajectory; stronger fast play = higher-quality positions in the data
 export SWA_ENABLE=1             # 5) stochastic weight averaging → offline swa_model.pth (probe vs candidate)
 export SWA_DECAY=0.75
 # 6) aux weights above (AUX_W_*) — tune from the epoch-1 "aux (raw, pre-weight)" log, not a fixed change.
