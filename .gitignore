@@ -234,7 +234,7 @@ site/
 # Temporary test files
 *.tmp
 *.temp
-*.bak
+*.bak*
 
 # Old versions of code
 *.old
