@@ -29,10 +29,16 @@ export TEMP_MOVES=16
 export MAX_WORKER_LEAD=3
 
 # Training: batch 2048 — fits the 24GB card (4096 OOMs at ~22GB here; that was a 48GB-only setting).
-# 50 DL workers × prefetch 2. Genoa box has 193GB RAM so DL/RAM is never the limit.
+# DL workers 90→16: the dataset is loaded fully into RAM, so __getitem__ is pure indexing (no disk I/O)
+# and the GPU is the bottleneck — 16 workers keep it fed. 90 was the RAM-balloon culprit: each worker
+# copy-on-write touches the numpy/list refcounts + holds prefetch buffers, inflating RSS far above the
+# printed f16-array size (it under-counts true process RAM). Fewer workers = much less RAM, no speed loss.
 export TRAIN_BATCH_SIZE=2048
-export TRAIN_DL_WORKERS=90
-export TRAIN_DL_PREFETCH=2
+export TRAIN_DL_WORKERS=32
+export TRAIN_DL_PREFETCH=4
+# Train on the last 50 iterations of self-play (was 20). Per-load RAM is still bounded by the chunk cap
+# (TRAIN_CHUNK_POSITIONS) — windows above it load in chunks, so a bigger window can't OOM the trainer.
+export TRAIN_WINDOW=50
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
 export TRAIN_MIN_ITER=0
