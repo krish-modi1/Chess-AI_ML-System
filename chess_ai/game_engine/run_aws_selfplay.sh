@@ -2,9 +2,9 @@
 # run_aws_selfplay.sh — AWS SELF-PLAY FARM (no training, no eval).
 #
 # Generates a bank of champion self-play games at the hyperparams sim config (currently 2000/200),
-# then gathers them into a single NUMERIC dir data/self_play/iter_<BANK_ITER>/ so the Vast trainer
-# picks it up AUTOMATICALLY on the next git pull — NO consumer code change needed (numeric iter dirs
-# are handled natively, and it's the highest-numbered dir so it's always inside the training window).
+# writing them DIRECTLY into a single NUMERIC dir data/self_play/iter_<BANK_ITER>/ (via SELFPLAY_FARM=1
+# in main.py) so the Vast trainer picks it up AUTOMATICALLY on the next git pull — NO consumer code
+# change needed (numeric iter dirs are handled natively; it's the highest-numbered dir so always in window).
 #
 # BANK_ITER must be HIGHER than any iteration the Vast run will reach during the experiment, else Vast
 # eventually writes its own self-play into the same dir (collision). Vast is ~iter-28 at ~6/day, so
@@ -13,9 +13,9 @@
 # Recommended box: g6e.8xlarge (L40S 48GB, 32-core Zen3, 256GB).
 #
 #   Provision a fresh box, then from the repo root:
-#     bash chess_ai/game_engine/run_aws_selfplay.sh --background       # 1. start the farm
+#     bash chess_ai/game_engine/run_aws_selfplay.sh --background       # 1. start farm (writes iter_900 DIRECTLY)
 #     kill -TERM "$(pgrep -f game_engine/main.py | head -1)"           # 2. stop when done
-#     bash chess_ai/game_engine/run_aws_selfplay.sh consolidate        # 3. gather games → iter_900/
+#     bash chess_ai/game_engine/run_aws_selfplay.sh consolidate        # 3. OPTIONAL safety sweep (pre-flag stray games)
 #     # 4. (you handle git) commit + push ONLY data/self_play/iter_900/
 #
 # Vast picks it up on the next pull. NOTE: as the highest-numbered dir, iter_900 loads FIRST under the
@@ -38,17 +38,20 @@ BASELINE="$HERE/.selfplay_baseline"
 # ---------------------------------------------------------------------------
 if [[ "${1:-}" == "consolidate" ]]; then
   mkdir -p "$BANK"
+  # Gather every game THIS farm produced into the bank: every npz NEWER than the baseline marker
+  # (written once at first farm start). Per-FILE (not per-dir) so games main.py appended into a
+  # PRE-EXISTING dir — e.g. a cloned iter_28 that's listed in the baseline — are still captured, while
+  # older pulled games stay put. Time-based, so it's robust to whatever iteration main.py wrote to.
   moved=0
   for d in "$DATA_DIR"/iter_*/; do
     [[ -d "$d" ]] || continue
     name="$(basename "$d")"; num="${name#iter_}"
     [[ "$name" == "$BANK_NAME" ]] && continue                          # never process the bank itself
     [[ "$num" =~ ^[0-9]+$ ]] || continue                              # skip any stray named dir
-    [[ -f "$BASELINE" ]] && grep -qx "$name" "$BASELINE" && continue   # skip pre-existing (pulled) iters
-    before=$(ls "$d"*.npz 2>/dev/null | wc -l)
-    find "$d" -name '*.npz' -exec mv -t "$BANK/" {} + 2>/dev/null || true
-    rmdir "$d" 2>/dev/null || true
-    moved=$((moved + before))
+    while IFS= read -r -d '' f; do
+      mv -t "$BANK/" "$f" && moved=$((moved + 1))
+    done < <(find "$d" -maxdepth 1 -name '*.npz' -newer "$BASELINE" -print0 2>/dev/null)
+    rmdir "$d" 2>/dev/null || true   # drop the dir only if the farm emptied it (baseline dirs keep old games)
   done
   echo "[farm] consolidated $moved game files → $BANK"
   echo "[farm] $BANK_NAME now holds $(ls "$BANK"/*.npz 2>/dev/null | wc -l) npz files"
@@ -88,6 +91,12 @@ export TEMP_MOVES=16                 # wide opening book (matches the main run)
 export MAX_WORKER_LEAD=20
 ENV
 export EXTRA_ENV="$OVR"
+
+# Direct-write: main.py dumps every self-play game straight into iter_$BANK_ITER (the bank), so NO
+# consolidate/relabel is needed — push data/self_play/$BANK_NAME/ as-is. (The consolidate step above is
+# now just a safety sweep for games written BEFORE this flag existed, e.g. a pre-flag iter_28.)
+export SELFPLAY_FARM=1
+export FARM_BANK_ITER="$BANK_ITER"
 
 # Seed the champion from Drive — the farm self-plays with best_model.pth (guarded: only if missing).
 MODEL_DIR="$HERE/model"

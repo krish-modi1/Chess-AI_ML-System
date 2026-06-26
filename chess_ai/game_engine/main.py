@@ -213,7 +213,9 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
 
     setup_child_logging()
     
-    iter_dir = os.path.join(DATA_DIR, f"iter_{iteration}")
+    # Farm mode routes all games into the single bank dir; otherwise the loop's own iteration.
+    sp_iter = FARM_BANK_ITER if SELFPLAY_FARM else iteration
+    iter_dir = os.path.join(DATA_DIR, f"iter_{sp_iter}")
     os.makedirs(iter_dir, exist_ok=True)
     
     # PASS SEED TO MCTSWorker for C++ RNG seeding
@@ -466,6 +468,12 @@ LOG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 MODEL_DIR = "game_engine/model"
 DATA_DIR = "data/self_play"
 RUN_STATE_FILE = os.path.join(DATA_DIR, "run_state.json")
+# Self-play "bank" farm: with SELFPLAY_FARM=1 every self-play game is written into one fixed dir
+# iter_<FARM_BANK_ITER> (default 900) instead of the loop's iter_<iteration>. Lets a throwaway/AWS box
+# mass-generate champion games straight into the bank dir the Vast trainer auto-consumes — no
+# consolidate/relabel and no collision with the live run's iteration numbers. Push iter_900 as-is.
+SELFPLAY_FARM = os.environ.get("SELFPLAY_FARM", "0") == "1"
+FARM_BANK_ITER = int(os.environ.get("FARM_BANK_ITER", "900"))
 BEST_MODEL = f"{MODEL_DIR}/best_model.pth"
 CANDIDATE_MODEL = f"{MODEL_DIR}/candidate.pth"
 
