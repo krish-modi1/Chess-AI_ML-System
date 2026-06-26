@@ -297,3 +297,7 @@ chess_ai/training_log.txt
 chess_ai/bank_log.txt
 chess_ai/game_engine/training_log.txt
 chess_migration.tgz
+
+# Per-box loop/phase resume state — each box (Vast main run, AWS bank) writes its OWN counter.
+# Tracking it makes the bank's run_state collide with Vast's on every pull. Keep it local-only.
+chess_ai/data/self_play/run_state.json
