@@ -47,9 +47,10 @@ export MAX_WORKER_LEAD=3
 export TRAIN_BATCH_SIZE=2048
 export TRAIN_DL_WORKERS=32
 export TRAIN_DL_PREFETCH=4
-# Train on the last 50 iterations of self-play (was 20). Per-load RAM is still bounded by the chunk cap
-# (TRAIN_CHUNK_POSITIONS) — windows above it load in chunks, so a bigger window can't OOM the trainer.
-export TRAIN_WINDOW=50
+# Train on the last 30 iterations of self-play (was 50). Tightened to age out the old pre-2000-sim data
+# faster so the 2000-sim games — recent iters + the iter_900 bank (always in-window as the highest dir) —
+# dominate sooner. Per-load RAM is still bounded by the chunk cap (TRAIN_CHUNK_POSITIONS).
+export TRAIN_WINDOW=30
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
 export TRAIN_MIN_ITER=0
