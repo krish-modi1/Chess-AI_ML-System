@@ -20,7 +20,7 @@ export NUM_WORKERS=150
 # Reserve 8 of the 96 cores for the GPU-feeding inference server (1 gather + ~6 stream executors).
 # The server feed isn't the bottleneck (gather sits ~14% idle), but keeping it off the worker cores
 # avoids the deadlock-timeout-self-kill failure mode. Workers get the remaining 88.
-export RESERVED_CORES=8
+export RESERVED_CORES=4
 CUDA_BATCH_SIZE=$(( NUM_WORKERS * WORKER_BATCH_SIZE ))
 (( CUDA_BATCH_SIZE > VRAM_CAP )) && CUDA_BATCH_SIZE=$VRAM_CAP
 export CUDA_BATCH_SIZE
@@ -45,8 +45,8 @@ export MAX_WORKER_LEAD=3
 # copy-on-write touches the numpy/list refcounts + holds prefetch buffers, inflating RSS far above the
 # printed f16-array size (it under-counts true process RAM). Fewer workers = much less RAM, no speed loss.
 export TRAIN_BATCH_SIZE=2048
-export TRAIN_DL_WORKERS=32
-export TRAIN_DL_PREFETCH=4
+export TRAIN_DL_WORKERS=64
+export TRAIN_DL_PREFETCH=2
 # Train on the last 30 iterations of self-play (was 50). Tightened to age out the old pre-2000-sim data
 # faster so the 2000-sim games — recent iters + the iter_900 bank (always in-window as the highest dir) —
 # dominate sooner. Per-load RAM is still bounded by the chunk cap (TRAIN_CHUNK_POSITIONS).
@@ -65,9 +65,9 @@ export TRAIN_FROM_LINEAGE=1
 # Arena: 50 workers × 4 games = 200 games (tighter promotion gate). 4/worker = 2 White + 2 Black,
 #   stays color-balanced. Stockfish eval kept at 64×... (its own knobs below).
 export EVAL_WORKERS=50
-export GAMES_PER_EVAL_WORKER=4
-export STOCKFISH_WORKERS=100
-export STOCKFISH_GAMES=200
+export GAMES_PER_EVAL_WORKER=6
+export STOCKFISH_WORKERS=50
+export STOCKFISH_GAMES=300
 
 # Stockfish/Elo ONLY on promotion (EVERY_ITER=0): a rejected iter leaves best_model unchanged, so its
 # Elo is unchanged — re-measuring it just burns 200 games and adds ±CI noise to the trend. Now that
