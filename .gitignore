@@ -293,10 +293,11 @@ local/
 
 # Training stdout logs — grow ~100k lines/iter and blow past GitHub's 100MB file limit.
 # Not backup-critical (the npz games are the real backup); pull/scp on demand for analysis.
-chess_ai/training_log.txt
+chess_ai/training_*.txt
 chess_ai/bank_log.txt
 chess_ai/game_engine/training_log.txt
 chess_migration.tgz
+/home/krish/Chess-AI_ML-System/chess_ai/data_backup
 
 # Per-box loop/phase resume state — each box (Vast main run, AWS bank) writes its OWN counter.
 # Tracking it makes the bank's run_state collide with Vast's on every pull. Keep it local-only.
