@@ -37,7 +37,7 @@ export TEMP_MOVES=16
 
 # Worker pacing: cap a fast worker to ≤3 games ahead of the slowest (was 5) — tighter spread so
 # fewer workers finish all 10 and idle while stragglers catch up = less tail-idle at iter end.
-export MAX_WORKER_LEAD=3
+export MAX_WORKER_LEAD=10
 
 # Training: batch 2048 — fits the 24GB card (4096 OOMs at ~22GB here; that was a 48GB-only setting).
 # DL workers 90→16: the dataset is loaded fully into RAM, so __getitem__ is pure indexing (no disk I/O)
