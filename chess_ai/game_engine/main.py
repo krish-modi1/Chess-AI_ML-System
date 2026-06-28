@@ -754,8 +754,14 @@ def run_stockfish_eval_gpu(model_path, num_games, stockfish_path, sims, sf_elo, 
         remaining = deadline - time.time()
         if remaining <= 0:
             break
+        # Bail fast if the server died mid-eval (deadlock guard) rather than burning the full
+        # deadline waiting on games that can never arrive; score what completed.
+        if not sp.is_alive():
+            print("  ⚠️ Stockfish eval: inference server died mid-phase — ending collection early "
+                  "with the games completed so far.")
+            break
         try:
-            r = result_q.get(timeout=min(900, remaining))
+            r = result_q.get(timeout=min(60, remaining))   # short get → re-check liveness often
             if r is not None:
                 results.append(r)
         except Exception:
@@ -953,13 +959,22 @@ def run_arena_eval_gpu(cand_model, champ_model, num_games, sims, max_moves):
         p.start(); workers.append(p)
 
     totals = {"wins": 0, "draws": 0, "losses": 0, "forced_draws": 0}
-    for _ in range(n_workers):
+    collected = 0
+    while collected < n_workers:
+        # If a server died (e.g. its deadlock guard fired because a worker hung and it went idle),
+        # stop waiting and decide the gate on the games already played — the shared `tally` below is
+        # authoritative — instead of blocking up to n_workers×timeout (~25h at 50 workers).
+        if not (cand_sp.is_alive() and champ_sp.is_alive()):
+            print("  ⚠️ Arena: an inference server died mid-phase — ending collection early, "
+                  "deciding the gate on the games played so far (shared tally).")
+            break
         try:
-            r = result_q.get(timeout=1800)
+            r = result_q.get(timeout=60)
             for k in totals:
                 totals[k] += r[k]
+            collected += 1
         except Exception:
-            pass
+            continue   # no result in 60s — re-check server liveness, keep waiting while alive
     # Strict teardown — the early-stop path can leave workers mid-search and the SHM/GPU buffers
     # live; reclaim everything before the next phase (training) so nothing leaks across iterations
     # (critical on a no-swap box). Escalate join → terminate → kill so no worker stuck in a native
@@ -1063,7 +1078,23 @@ def run_self_play_phase(iteration):
         while True:
             # 1. Check if Server is alive
             if not server_process.is_alive():
-                print("🚨 CRITICAL: Inference Server died unexpectedly! Terminating workers...")
+                # The inference server self-kills after SERVER_DEADLOCK_TIMEOUT with no batches.
+                # In practice this fires at iteration WINDDOWN: a straggler worker hangs (every
+                # other worker is done and its games are already saved as npz), the server idles
+                # and trips its own deadlock guard. Previously we re-raised here → the whole
+                # process crashed and had to be restarted by hand, redoing the entire phase.
+                # Instead: salvage the games already on disk and advance to training, UNLESS so
+                # few games completed that this was a genuine early failure (then re-raise).
+                done_games = sum(games_counter[:])
+                expected = NUM_WORKERS * GAMES_PER_WORKER
+                grace = float(os.environ.get("SELFPLAY_DEADLOCK_GRACE", 0.5))
+                if done_games >= grace * expected:
+                    print(f"⚠️ Inference server stopped (deadlock at winddown) with "
+                          f"{done_games}/{expected} games done (≥{grace:.0%}). "
+                          f"Salvaging completed games and advancing to training.")
+                    break
+                print(f"🚨 CRITICAL: Inference Server died with only {done_games}/{expected} "
+                      f"games — treating as a real failure.")
                 raise RuntimeError("Inference Server died during self-play.")
             
             # 2. Check if Workers are done
@@ -1087,11 +1118,16 @@ def run_self_play_phase(iteration):
     finally:
         print("🧹 Cleaning up Phase 1 processes...")
         
-        # Kill any straggler workers
+        # Kill any straggler workers — escalate terminate → kill so a worker hung in a native
+        # MCTS/SHM call (the usual deadlock culprit) can't survive into the training phase
+        # holding cores/SHM.
         for p in workers:
             if p.is_alive():
                 p.terminate()
-                p.join(timeout=1)
+                p.join(timeout=5)
+            if p.is_alive():
+                p.kill()
+                p.join()
         
         # Stop Server
         if server_process.is_alive():

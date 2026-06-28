@@ -30,6 +30,12 @@ export CUDA_BATCH_SIZE
 # more leaves/sec. Don't raise it — fuller batches at a longer timeout are a vanity metric. [[selfplay-gpu-bottleneck]]
 export CUDA_TIMEOUT_INFERENCE=0.02
 
+# Server self-kill if it processes NO batch for this long (a real hang). Default is 1800s; lowered
+# to 600 so a winddown straggler-hang is detected and salvaged (main.py advances to training on the
+# games already on disk) in ~10min instead of ~30. The server never legitimately idles this long
+# mid-phase with 150 workers always requesting, so 600 won't false-fire. [[selfplay-gpu-bottleneck]]
+export SERVER_DEADLOCK_TIMEOUT=600
+
 # Opening exploration: τ=1 sampling for the first 16 plies (hyperparams halved it to 8 "to stay
 # on-distribution" — a corrupted-era call, now retired). Restore 16: self-play funneled into ~7
 # distinct openings/2000 games (peaked g3 prior); a longer temp window widens the opening book.
