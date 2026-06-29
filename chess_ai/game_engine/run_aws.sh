@@ -60,7 +60,7 @@ export MAX_WORKER_LEAD=10
 # copy-on-write touches the numpy/list refcounts + holds prefetch buffers, inflating RSS far above the
 # printed f16-array size (it under-counts true process RAM). Fewer workers = much less RAM, no speed loss.
 export TRAIN_BATCH_SIZE=2048
-export TRAIN_DL_WORKERS=16
+export TRAIN_DL_WORKERS=60
 export TRAIN_DL_PREFETCH=2
 # RAM belt: cap each loaded train chunk to ~2M raw pos (~2 chunks at the current window). Since
 # main.py now uses sharing_strategy='file_descriptor' (no /dev/shm route — that was the iter-43

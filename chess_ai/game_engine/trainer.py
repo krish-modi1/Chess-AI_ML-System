@@ -123,7 +123,7 @@ def scan_window_files(data_dir, window_size=20):
 
 
 class ChessDataset(Dataset):
-    def __init__(self, data_dir, window_size=20, max_positions=None, file_plan=None):
+    def __init__(self, data_dir, window_size=20, max_positions=None, file_plan=None, quiet=False):
         # Two load modes:
         #  • file_plan=None (default): scan the last `window_size` iters newest-first and cap at
         #    max_positions (MAX_TRAIN_POSITIONS — a RAM ceiling, ~24.7 KB/position in f16). Used
@@ -166,7 +166,8 @@ class ChessDataset(Dataset):
         _rp  = np.full(total, -1, dtype=np.int64) if AUX_ON else None
 
         # Pass 2: fill pre-allocated arrays
-        print(f"Loading {total:,} positions into RAM...")
+        if not quiet:
+            print(f"Loading {total:,} positions into RAM...")
         pos = 0
         skipped = 0
         thinned = 0
@@ -233,12 +234,13 @@ class ChessDataset(Dataset):
         self.total_positions = pos
 
         ram_gb = (self._states.nbytes + self._policies.nbytes + self._values.nbytes) / 1e9
-        if DRAW_MAX_POSITIONS > 0 or MAX_POSITIONS_PER_GAME > 0:
-            before = pos + thinned
-            print(f"Subsample (draw_cap={DRAW_MAX_POSITIONS} game_cap={MAX_POSITIONS_PER_GAME}): "
-                  f"{before:,} → {pos:,} positions "
-                  f"(thinned {thinned:,}, {100*thinned/max(before,1):.0f}% of buffer)")
-        print(f"Dataset Mapped: {self.total_positions:,} positions ({ram_gb:.1f} GB RAM).")
+        if not quiet:
+            if DRAW_MAX_POSITIONS > 0 or MAX_POSITIONS_PER_GAME > 0:
+                before = pos + thinned
+                print(f"Subsample (draw_cap={DRAW_MAX_POSITIONS} game_cap={MAX_POSITIONS_PER_GAME}): "
+                      f"{before:,} → {pos:,} positions "
+                      f"(thinned {thinned:,}, {100*thinned/max(before,1):.0f}% of buffer)")
+            print(f"Dataset Mapped: {self.total_positions:,} positions ({ram_gb:.1f} GB RAM).")
 
     def __len__(self):
         return self.total_positions
@@ -427,11 +429,15 @@ def train_model(data_path="data/self_play",
     # or the cosine completes its half-period ~epochs× too early (CosineAnnealingLR is periodic).
     # Single-chunk: the loader is already built, so use its REAL (post-subsample) batch count —
     # the pre-subsample plan over-counts ~5× (e.g. 152 vs ~30) and stalls the tqdm bar. Multi-chunk:
-    # chunks are built lazily (memory), so fall back to the pre-subsample estimate.
+    # chunks are built lazily (memory), so estimate the post-subsample count by scaling the raw plan
+    # by the val set's MEASURED retention ratio (val is already loaded and uses the same subsample
+    # caps) — raw alone over-counts ~1.7× and stalls the bar. Per-chunk ceil is kept (each chunk is
+    # its own loader, so each contributes a partial last batch).
+    retain = (len(val_dataset) / n_val_pos) if (n_val_pos > 0 and len(val_dataset) > 0) else 1.0
     if not multi_chunk and train_dataloader is not None:
         batches_per_epoch = len(train_dataloader)
     else:
-        batches_per_epoch = sum(max(1, (sum(n for _, n in ch) + batch_size - 1) // batch_size)
+        batches_per_epoch = sum(max(1, (int(sum(n for _, n in ch) * retain) + batch_size - 1) // batch_size)
                                 for ch in train_chunks)
     total_steps = total_iterations * epochs * max(batches_per_epoch, 1)
     scheduler = CosineAnnealingLR(optimizer, T_max=max(total_steps, 1), eta_min=1e-6)
@@ -479,7 +485,7 @@ def train_model(data_path="data/self_play",
     if not multi_chunk and train_dataset is not None:
         n_train_trained, train_est = len(train_dataset), ""
     else:
-        n_train_trained, train_est = n_train_pos, "~"
+        n_train_trained, train_est = int(n_train_pos * retain), "~"
     n_val_trained = len(val_dataset)
     sep = '─' * 86
     print(f"\n{'═'*86}")
@@ -506,15 +512,27 @@ def train_model(data_path="data/self_play",
         if multi_chunk:
             order = list(range(len(train_chunks)))
             np.random.shuffle(order)
-            for ci in order:
-                ds = ChessDataset(data_path, file_plan=train_chunks[ci])
+            for k, ci in enumerate(order):
+                # quiet=True: the chunk's own load prints would garble the active tqdm bar. Emit one
+                # concise line via tqdm.write instead (it clears + redraws the bar around the message).
+                ds = ChessDataset(data_path, file_plan=train_chunks[ci], quiet=True)
                 if len(ds) == 0:
                     continue
+                tqdm.write(f"    ↳ chunk {k+1}/{len(order)} loaded: {len(ds):,} positions")
                 dl = _mk_loader(ds, shuffle=True, persistent=False)
-                for b in dl:
-                    yield b
-                del dl, ds
-                gc.collect()
+                # Hold the iterator explicitly + tear it down in finally: 60 DL workers/chunk would
+                # otherwise linger (hogging CPU/RAM) until gc if the outer loop breaks/raises early or
+                # the generator is closed mid-chunk. _shutdown_workers() is idempotent, so calling it
+                # after a normal StopIteration (workers already gone) is a harmless no-op.
+                it = iter(dl)
+                try:
+                    for b in it:
+                        yield b
+                finally:
+                    if hasattr(it, '_shutdown_workers'):
+                        it._shutdown_workers()
+                    del it, dl, ds
+                    gc.collect()
         else:
             for b in train_dataloader:
                 yield b
