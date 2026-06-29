@@ -123,6 +123,7 @@ public:
     int batch_size;
     std::mt19937 rng;
     std::shared_ptr<MCTSNode> cached_root;
+    uint64_t search_calls = 0;   // bumped each search() so the per-call reseed varies per move/game
 
     MCTSEngine(int sims = 800, int bs = 8) : simulations(sims), batch_size(bs) {}
 

@@ -302,7 +302,10 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::search(
     py::function inference_callback,
     bool use_dirichlet) {
 
-    rng.seed(seed);
+    // Reseed per call but ADVANCE by a per-engine counter so each move/game gets fresh randomness
+    // (still reproducible given a fixed SEED_BASE). The old `rng.seed(seed)` reset to the SAME value
+    // every move → identical Dirichlet noise each move and the same opening sampled every game.
+    rng.seed(seed + search_calls++);
 
     std::shared_ptr<MCTSNode> root;
     if (cached_root && cached_root->is_expanded()) {
@@ -424,7 +427,31 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::search(
         leaf_states.clear();
     }
 
-    std::string best_move = root->best_action();
+    // Move selection. temperature≈0 → greedy (most-visited), matching eval/arena (use_dirichlet=false,
+    // temperature=0). temperature>0 (self-play's first TEMP_MOVES plies) → SAMPLE the played move from
+    // the visit distribution ∝ visit_count^(1/T), the AlphaZero opening-diversity mechanism. Previously
+    // the played move was ALWAYS argmax, so the temperature schedule only shaped the stored target and
+    // never diversified actual play (a primary cause of the opening collapse to a single move).
+    std::string best_move;
+    if (temperature < 1e-6f) {
+        best_move = root->best_action();
+    } else {
+        std::vector<std::string> actions;
+        std::vector<double> weights;
+        const double inv_t = 1.0 / temperature;
+        for (const auto& [action, child] : root->children) {
+            if (child->visit_count > 0) {
+                actions.push_back(action);
+                weights.push_back(std::pow((double)child->visit_count, inv_t));
+            }
+        }
+        if (actions.empty()) {
+            best_move = root->best_action();   // no visited child (shouldn't happen) → greedy fallback
+        } else {
+            std::discrete_distribution<size_t> dist(weights.begin(), weights.end());
+            best_move = actions[dist(rng)];
+        }
+    }
     auto policy = get_policy_vector(root, temperature);
     cached_root = root;
 
