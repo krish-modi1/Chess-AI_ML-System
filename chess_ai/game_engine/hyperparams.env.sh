@@ -129,8 +129,9 @@ export TRAIN_FROM_LINEAGE=0   # OFF for the iter-3 rollback: train each candidat
                               # the champ 1524→1390→1294 on diffuse data — re-enable once on-distribution
                               # data proves the targets are good (per-iter Elo holding/climbing).
 export TEMP_MOVES=8           # was 16. Halve the random-opening window to keep self-play on-distribution.
-export TRAIN_EPOCHS=2          # 1→2: extract more from the decorrelated buffer (safe now that cap=20
-                              # prevents the overfitting that 4 epochs caused at iter-1)
+export TRAIN_EPOCHS=3          # iter-40: 2→3 to extract more from the decorrelated buffer per iter
+                              # (cap=20 subsample prevents the overfitting that 4 epochs caused at
+                              # iter-1). Watch the Va-P/Va-Acc gap — revert if val degrades vs train.
 export TRAIN_LR=1.5e-4         # iter-24: LOWERED 3e-4→1.5e-4. 3e-4 OVER-optimized a mature net (~2438):
                               # WR fell 0.556→0.246 over iters 17-23 (training metrics improved while arena
                               # strength dropped = Goodhart/over-optimization). AZ's final LR was 2e-4,
