@@ -16,7 +16,7 @@ cat > "$OVR" <<'ENV'
 #   OOM over a long run, the per-iteration RAM creep needs a real fix (or a periodic restart).
 #   GPU stays queue-starved (latency-bound, sm~72%) but RAM, not the GPU, is the ceiling on this box.
 #   CUDA_BATCH auto = NUM_WORKERS×8 (< VRAM_CAP 16000, fits 24GB easily). [[selfplay-gpu-bottleneck]]
-export NUM_WORKERS=150
+export NUM_WORKERS=160
 # Reserve 8 of the 96 cores for the GPU-feeding inference server (1 gather + ~6 stream executors).
 # The server feed isn't the bottleneck (gather sits ~14% idle), but keeping it off the worker cores
 # avoids the deadlock-timeout-self-kill failure mode. Workers get the remaining 88.
