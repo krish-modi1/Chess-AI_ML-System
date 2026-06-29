@@ -265,7 +265,7 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
             # Forced opening book: seed this game with one of the 20 openings, chosen round-robin by
             # global game id so coverage is exactly even. Scripted plies are NOT recorded (no append to
             # game_data); the tree + history are advanced so the first recorded search sees the position.
-            if USE_OPENING_BOOK and OPENING_BOOK:
+            if USE_OPENING_BOOK and OPENING_BOOK and np.random.random() < OPENING_BOOK_PROB:
                 opening = OPENING_BOOK[(worker_id * game_limit + i) % len(OPENING_BOOK)]
                 for u in opening.split():
                     if game.is_over:
@@ -523,6 +523,11 @@ TEMP_MOVES = int(os.environ.get("TEMP_MOVES", 16))
 # opening externally and let the model play NATURALLY from each diverse start. Book plies are NOT
 # recorded (scripted moves aren't MCTS targets). All lines validated legal. USE_OPENING_BOOK=0 → off.
 USE_OPENING_BOOK = os.environ.get("USE_OPENING_BOOK", "1") == "1"
+# Fraction of games seeded from the forced book; the rest start from the standard position and play
+# on-distribution (the net's own opening via τ=1 for TEMP_MOVES plies + root Dirichlet). 1.0 = the
+# original always-book behavior. Lower it to mix in on-distribution games so the middle/endgame data
+# matches what the net actually reaches in play — WATCH check_diversity.py for opening collapse.
+OPENING_BOOK_PROB = float(os.environ.get("OPENING_BOOK_PROB", "1.0"))
 OPENING_BOOK = [
     "e2e4 e7e5 g1f3 b8c6 f1b5 a7a6",                     # Ruy Lopez
     "e2e4 e7e5 g1f3 b8c6 f1c4 f8c5",                     # Italian

@@ -41,6 +41,14 @@ export SERVER_DEADLOCK_TIMEOUT=600
 # distinct openings/2000 games (peaked g3 prior); a longer temp window widens the opening book.
 export TEMP_MOVES=16
 
+# Opening mix (iter-41): 5% of games seed from the forced book, 95% play ON-DISTRIBUTION from the start
+# (net's own opening via τ=1 for TEMP_MOVES plies + root Dirichlet). This matches KataGo/Lc0: diversity
+# is carried by temperature+noise, with only a small forced-opening floor. The 100% book was a one-time
+# BOOTSTRAP to blanket the opening space; base data now exists (40 iters) → refine on-distribution so
+# middle/endgame data matches what the net actually reaches. WATCH check_diversity.py — if the 95%
+# collapses to a narrow repertoire (history: ~98% Nf3 without the book), raise this back up. [[opening-book-diversity]]
+export OPENING_BOOK_PROB=0.05
+
 # Worker pacing: cap a fast worker to ≤3 games ahead of the slowest (was 5) — tighter spread so
 # fewer workers finish all 10 and idle while stragglers catch up = less tail-idle at iter end.
 export MAX_WORKER_LEAD=10
