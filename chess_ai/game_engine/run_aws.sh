@@ -41,13 +41,14 @@ export SERVER_DEADLOCK_TIMEOUT=600
 # distinct openings/2000 games (peaked g3 prior); a longer temp window widens the opening book.
 export TEMP_MOVES=16
 
-# Opening mix: 50% of games seed from the forced book, 50% play on-distribution. The KataGo/Lc0 5%
-# was TRIED at iter-41 and COLLAPSED HARD — 96% g1f3 at move 1 (all 200-sim FAST moves, Dirichlet OFF
-# under PCR, identical v=+0.11). Root cause: the 100%-book bootstrap left the net's opening policy
-# pathologically peaked, and τ=1 over a degenerate visit count is effectively greedy — the book is this
-# net's ONLY diversity source. 0.5 keeps the book carrying diversity while still mixing in on-distribution
-# games. WATCH check_diversity.py; raise toward 1.0 if even the book half can't hold it. [[opening-book-diversity]]
-export OPENING_BOOK_PROB=0.5
+# Opening mix: 5% of games seed from the forced book, 95% play on-distribution (KataGo/Lc0 target).
+# 0.05 was tried at iter-41 and collapsed to 96% g1f3 — BUT the root cause was a C++ bug, not the value:
+# the played move was argmax(visits) (temperature was inert) and rng reseeded constant every move, so
+# τ=1 never actually sampled. FIXED (mcts_engine.cpp samples the move ∝ visits^(1/T) + per-call reseed);
+# at 0.5 the on-distribution HALF then held diversity on its own (g1f3 24%, not 96% — iter-42), proving
+# sampling now carries it. So the book is no longer the sole source → drop to 0.05. WATCH
+# check_diversity.py on the next iter; raise back if the net's sampled openings narrow. [[opening-book-diversity]]
+export OPENING_BOOK_PROB=0.05
 
 # Worker pacing: cap a fast worker to ≤3 games ahead of the slowest (was 5) — tighter spread so
 # fewer workers finish all 10 and idle while stragglers catch up = less tail-idle at iter end.
