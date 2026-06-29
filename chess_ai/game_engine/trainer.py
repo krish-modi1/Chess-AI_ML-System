@@ -544,7 +544,11 @@ def train_model(data_path="data/self_play",
             if anchor is not None:
                 with torch.no_grad(), torch.amp.autocast(device_type=device.type):
                     a_logits, _ = anchor(states)
-                anchor_logp = torch.log_softmax(a_logits.float(), dim=1).clamp(min=-100.0)
+                # nan_to_num BEFORE clamp: the frozen anchor (champion) run under fp16 autocast can
+                # overflow to inf logits on off-distribution states (e.g. the old iter_1-10 games that
+                # entered the window at iter-41), and log_softmax(inf)→NaN which clamp does NOT fix —
+                # that NaN propagated into the KL term and poisoned the loss. Map NaN→-100 (≈prob 0).
+                anchor_logp = torch.log_softmax(a_logits.float(), dim=1).nan_to_num(nan=-100.0).clamp(min=-100.0)
                 del a_logits
 
             with torch.amp.autocast(device_type=device.type):
@@ -577,8 +581,12 @@ def train_model(data_path="data/self_play",
             if anchor_logp is not None:
                 # KL(anchor ‖ candidate): hold the policy near the pretrained prior.
                 kl = (anchor_logp.exp() * (anchor_logp - log_probs)).sum(dim=1).mean()
-                loss = loss + KL_ANCHOR_BETA * kl
-                tr_kl += float(kl.item())
+                # Defensive: if kl is still non-finite for any reason, skip ONLY the anchor term so the
+                # batch still trains on p/v/aux (a NaN here used to skip the whole optimizer step via
+                # the GradScaler) and the epoch-average display isn't poisoned.
+                if torch.isfinite(kl):
+                    loss = loss + KL_ANCHOR_BETA * kl
+                    tr_kl += float(kl.item())
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
