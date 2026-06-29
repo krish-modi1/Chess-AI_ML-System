@@ -9,7 +9,13 @@ import json
 import collections
 import torch
 import torch.multiprocessing
-torch.multiprocessing.set_sharing_strategy('file_system')
+# 'file_descriptor' (PyTorch's Linux default) shares tensors via FILE DESCRIPTORS, not /dev/shm files.
+# The previous 'file_system' override forced the WHOLE in-RAM training dataset into /dev/shm at
+# DataLoader-worker spawn → it overran /dev/shm (iter-43 "No space left on device" crash) and leaks on
+# worker churn. file_system was a redundant hedge for the iter-21 "too many open files" crash, which is
+# already covered by the `ulimit -n 1048576` raise in run_aws.sh — so file_descriptor is safe here and
+# ends the /dev/shm exhaustion entirely (RAM, not shm, is now the only data ceiling). [[selfplay-gpu-bottleneck]]
+torch.multiprocessing.set_sharing_strategy('file_descriptor')
 import numpy as np
 import signal
 import sys

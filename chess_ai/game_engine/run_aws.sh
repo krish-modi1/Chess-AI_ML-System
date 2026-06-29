@@ -60,13 +60,18 @@ export MAX_WORKER_LEAD=10
 # copy-on-write touches the numpy/list refcounts + holds prefetch buffers, inflating RSS far above the
 # printed f16-array size (it under-counts true process RAM). Fewer workers = much less RAM, no speed loss.
 export TRAIN_BATCH_SIZE=2048
-export TRAIN_DL_WORKERS=64
+export TRAIN_DL_WORKERS=16
 export TRAIN_DL_PREFETCH=2
+# RAM belt: cap each loaded train chunk to ~2M raw pos (~2 chunks at the current window). Since
+# main.py now uses sharing_strategy='file_descriptor' (no /dev/shm route — that was the iter-43
+# crash), this only bounds peak TRAINING RAM at load (~33GB/chunk), not shm. Trains all data per
+# epoch in 2 load passes. Raise toward 3M for single-chunk speed if RAM headroom is confirmed.
+export TRAIN_CHUNK_POSITIONS=2000000
 # Train on the last 45 iterations of self-play (iter-40: widened 30→45 to give the 3rd training epoch
 # more unique positions per pass = less overfitting). Tradeoff vs the old 30: re-admits the older
-# lower-sim early iters (mild teacher-signal dilution), and the raw window (~3.3M pos) now exceeds
-# TRAIN_CHUNK_POSITIONS=3M → training runs in 2 chunks (bounded per-load RAM, longer train phase).
-export TRAIN_WINDOW=45
+# lower-sim early iters (mild teacher-signal dilution). Peak training RAM is bounded by the
+# TRAIN_CHUNK_POSITIONS=2M cap above, so the wide window stays within the box's RAM.
+export TRAIN_WINDOW=50
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
 export TRAIN_MIN_ITER=0
