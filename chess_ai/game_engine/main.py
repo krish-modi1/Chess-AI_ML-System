@@ -291,7 +291,7 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                 move_count = len(game.moves)
 
                 if move_count < TEMP_MOVES:
-                    current_temp = 1.0
+                    current_temp = SELFPLAY_TEMPERATURE
                 else:
                     current_temp = 0.0
 
@@ -519,9 +519,12 @@ REDUCED_SIMULATIONS = int(os.environ.get("REDUCED_SIMULATIONS", 100))
 # every move = current behavior). See local/plans/upgrades-1-6.md.
 FULL_SEARCH_PROB = float(os.environ.get("FULL_SEARCH_PROB", 0.0))
 FAST_SIMULATIONS = int(os.environ.get("FAST_SIMULATIONS", 200))
-# Opening exploration: sample the played move (temperature=1) for the first TEMP_MOVES plies, then
-# greedy. Lower = stay closer to the prior's lines (less off-distribution opening drift). AZ used ~30.
+# Opening exploration: sample the played move ∝ visits^(1/T) for the first TEMP_MOVES plies, then
+# greedy. SELFPLAY_TEMPERATURE T<1 SHARPENS the sampling toward high-visit (good) moves — T=0.5 →
+# visits^2, which cuts the τ=1 junk (tempo-wasting knight shuffles etc.) while keeping top-move
+# diversity. TEMP_MOVES widens the window (AZ used ~30). Self-play only; arena/eval play greedy (T=0).
 TEMP_MOVES = int(os.environ.get("TEMP_MOVES", 16))
+SELFPLAY_TEMPERATURE = float(os.environ.get("SELFPLAY_TEMPERATURE", "1.0"))
 
 # Forced opening book (self-play): every game starts from one of 20 sound, structurally-distinct
 # openings, divided round-robin by global game id (each opening gets exactly 1/20 of games). Breaks
