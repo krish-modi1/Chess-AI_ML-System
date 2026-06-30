@@ -71,7 +71,7 @@ export TRAIN_CHUNK_POSITIONS=2500000
 # more unique positions per pass = less overfitting). Tradeoff vs the old 30: re-admits the older
 # lower-sim early iters (mild teacher-signal dilution). Peak training RAM is bounded by the
 # TRAIN_CHUNK_POSITIONS=2M cap above, so the wide window stays within the box's RAM.
-export TRAIN_WINDOW=30
+export TRAIN_WINDOW=60
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
 export TRAIN_MIN_ITER=0
