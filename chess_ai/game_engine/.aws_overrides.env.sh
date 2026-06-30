@@ -5,7 +5,7 @@
 #   OOM over a long run, the per-iteration RAM creep needs a real fix (or a periodic restart).
 #   GPU stays queue-starved (latency-bound, sm~72%) but RAM, not the GPU, is the ceiling on this box.
 #   CUDA_BATCH auto = NUM_WORKERS×8 (< VRAM_CAP 16000, fits 24GB easily). [[selfplay-gpu-bottleneck]]
-export NUM_WORKERS=160
+export NUM_WORKERS=240
 # Reserve 8 of the 96 cores for the GPU-feeding inference server (1 gather + ~6 stream executors).
 # The server feed isn't the bottleneck (gather sits ~14% idle), but keeping it off the worker cores
 # avoids the deadlock-timeout-self-kill failure mode. Workers get the remaining 88.
@@ -55,12 +55,12 @@ export TRAIN_DL_PREFETCH=2
 # main.py now uses sharing_strategy='file_descriptor' (no /dev/shm route — that was the iter-43
 # crash), this only bounds peak TRAINING RAM at load (~33GB/chunk), not shm. Trains all data per
 # epoch in 2 load passes. Raise toward 3M for single-chunk speed if RAM headroom is confirmed.
-export TRAIN_CHUNK_POSITIONS=2000000
+export TRAIN_CHUNK_POSITIONS=2500000
 # Train on the last 45 iterations of self-play (iter-40: widened 30→45 to give the 3rd training epoch
 # more unique positions per pass = less overfitting). Tradeoff vs the old 30: re-admits the older
 # lower-sim early iters (mild teacher-signal dilution). Peak training RAM is bounded by the
 # TRAIN_CHUNK_POSITIONS=2M cap above, so the wide window stays within the box's RAM.
-export TRAIN_WINDOW=50
+export TRAIN_WINDOW=30
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
 export TRAIN_MIN_ITER=0
