@@ -25,10 +25,14 @@ export CUDA_TIMEOUT_INFERENCE=0.02
 # mid-phase with 150 workers always requesting, so 600 won't false-fire. [[selfplay-gpu-bottleneck]]
 export SERVER_DEADLOCK_TIMEOUT=600
 
-# Opening exploration: τ=1 sampling for the first 16 plies (hyperparams halved it to 8 "to stay
-# on-distribution" — a corrupted-era call, now retired). Restore 16: self-play funneled into ~7
-# distinct openings/2000 games (peaked g3 prior); a longer temp window widens the opening book.
-export TEMP_MOVES=16
+# Opening exploration: sample the played move ∝ visits^(1/T) for the first TEMP_MOVES plies.
+# TEMP_MOVES 16→20: a wider window widens the opening book. SELFPLAY_TEMPERATURE 1.0→0.5 SHARPENS
+# the sampling (visits^2) so it stays on the high-visit (sound) moves — cuts the τ=1 junk
+# (tempo-wasting knight shuffles, random flank pawns) that made the on-distribution openings noisy,
+# while keeping top-move diversity. Wider-but-sharper = more, cleaner opening variety. Watch
+# check_diversity.py next iter (don't let openings narrow). Arena/eval still play greedy (T=0).
+export TEMP_MOVES=20
+export SELFPLAY_TEMPERATURE=0.5
 
 # Opening mix: 5% of games seed from the forced book, 95% play on-distribution (KataGo/Lc0 target).
 # 0.05 was tried at iter-41 and collapsed to 96% g1f3 — BUT the root cause was a C++ bug, not the value:
