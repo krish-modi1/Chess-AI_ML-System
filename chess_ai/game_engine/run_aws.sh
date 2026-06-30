@@ -66,7 +66,7 @@ export TRAIN_DL_PREFETCH=2
 # main.py now uses sharing_strategy='file_descriptor' (no /dev/shm route — that was the iter-43
 # crash), this only bounds peak TRAINING RAM at load (~33GB/chunk), not shm. Trains all data per
 # epoch in 2 load passes. Raise toward 3M for single-chunk speed if RAM headroom is confirmed.
-export TRAIN_CHUNK_POSITIONS=2000000
+export TRAIN_CHUNK_POSITIONS=2500000
 # Train on the last 45 iterations of self-play (iter-40: widened 30→45 to give the 3rd training epoch
 # more unique positions per pass = less overfitting). Tradeoff vs the old 30: re-admits the older
 # lower-sim early iters (mild teacher-signal dilution). Peak training RAM is bounded by the
