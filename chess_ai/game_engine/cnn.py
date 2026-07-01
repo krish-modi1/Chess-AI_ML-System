@@ -13,7 +13,7 @@ class SEBlock(nn.Module):
         self.excitation = nn.Sequential(
             nn.Linear(channels, channels // reduction, bias=False),
             Mish(),
-            nn.Linear(channels // reduction, channels, bias=False),
+            nn.Linear(channels // reduction, channels, bias=True),   # bias enables identity-init on grown blocks (Net2Net)
             nn.Sigmoid()
         )
 
@@ -46,11 +46,11 @@ class ChessCNN(nn.Module):
     def __init__(self):
         super().__init__()
         input_channels = 120
-        self.num_filters = 256
+        self.num_filters = 320   # Net2Net widen 256→320 (function-preserving); see tools/grow_net2net.py
         self.num_blocks = 20
         filters = self.num_filters
         num_res_blocks = self.num_blocks
-        se_start_idx = 10  # SE blocks from layer 10 onwards
+        se_start_idx = 0   # SE on ALL blocks (was 10); new blocks 0-9 grown identity-init
 
         self.input_conv = nn.Sequential(
             nn.Conv2d(input_channels, filters, 3, padding=1, bias=False),
