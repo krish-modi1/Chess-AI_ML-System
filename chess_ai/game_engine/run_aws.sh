@@ -58,12 +58,16 @@ export OPENING_BOOK_PROB=0.05
 # fewer workers finish all 10 and idle while stragglers catch up = less tail-idle at iter end.
 export MAX_WORKER_LEAD=10
 
-# Training: batch 2048 — fits the 24GB card (4096 OOMs at ~22GB here; that was a 48GB-only setting).
+# Training: batch 2048→1536 for the Net2Net 20x320 net. 320 vs 256 filters = ~1.25× activation/sample,
+# AND the KL-anchor (β=1.0) loads a SECOND 320-model copy + forward pass during training — so the 2048
+# that fit the 256 net now risks OOM. 1536 ≈ 2048/1.25 with margin for the anchor. If it still OOMs,
+# drop to 1280/1024; if VRAM is comfortable on the first iter, you can nudge back up. (LR unaffected:
+# arch change → fresh cosine, T_max recomputes for the new batch count.)
 # DL workers 90→16: the dataset is loaded fully into RAM, so __getitem__ is pure indexing (no disk I/O)
 # and the GPU is the bottleneck — 16 workers keep it fed. 90 was the RAM-balloon culprit: each worker
 # copy-on-write touches the numpy/list refcounts + holds prefetch buffers, inflating RSS far above the
 # printed f16-array size (it under-counts true process RAM). Fewer workers = much less RAM, no speed loss.
-export TRAIN_BATCH_SIZE=2048
+export TRAIN_BATCH_SIZE=1536
 export TRAIN_DL_WORKERS=60
 export TRAIN_DL_PREFETCH=2
 # RAM belt: cap each loaded train chunk to ~2M raw pos (~2 chunks at the current window). Since
