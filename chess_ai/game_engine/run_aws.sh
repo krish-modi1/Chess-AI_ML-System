@@ -91,7 +91,7 @@ export TRAIN_MIN_ITER=0
 # only on the FIRST rejection: lineage continues from the rejected candidate (no wasted learning)
 # instead of resetting to champion. KL-anchor stays pinned to pretrained. Reversible: flip to 0 to
 # reset to champion if a lineage ever stalls (arena gate keeps self-play clean throughout).
-export TRAIN_FROM_LINEAGE=0
+export TRAIN_FROM_LINEAGE=1
 
 # Arena: 50 workers × 4 games = 200 games (tighter promotion gate). 4/worker = 2 White + 2 Black,
 #   stays color-balanced. Stockfish eval kept at 64×... (its own knobs below).
