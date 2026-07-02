@@ -105,7 +105,7 @@ export STOCKFISH_GAMES=300
 # BayesElo is reliable, measure the champion once per champion (on promotion); the logger carries the
 # last Elo forward on non-promoted iters (elo_measured=false). Arena still runs every iter (the gate).
 export STOCKFISH_EVERY_ITER=0
-export STOCKFISH_ELO=2800
+export STOCKFISH_ELO=2600
 export STOCKFISH_NODES=0
 ENV
 export EXTRA_ENV="$OVR"
