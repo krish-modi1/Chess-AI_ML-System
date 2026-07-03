@@ -15,7 +15,7 @@ import glob
 import sys
 import time
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
+import json
 
 # Ensure we can import from the parent directory
 sys.path.append(os.getcwd())
@@ -85,27 +85,83 @@ AUX_ON = (AUX_W_MAT > 0 or AUX_W_PLIES > 0 or AUX_W_REPLY > 0)
 def _npz_member_shape(zf, name):
     """Read a .npy member's shape from its header WITHOUT decompressing the array body.
     np.load(f)['states'].shape decompresses the whole array just to read .shape (~9x slower);
-    the shape lives in the ~128-byte .npy header at the member's start, so we stop reading there."""
+    the shape lives in the ~128-byte .npy header at the member's start, so we stop reading there.
+    Uses the PUBLIC numpy header readers rather than the underscore-private _read_array_header:
+    a private symbol can be renamed/removed on a numpy upgrade, and here that would silently
+    disable training (every file errors → empty plan → "No Data" while the loop keeps running)."""
     with zf.open(name) as fp:
         version = np.lib.format.read_magic(fp)
-        shape, _fortran, _dtype = np.lib.format._read_array_header(fp, version)
+        if version == (1, 0):
+            shape, _fortran, _dtype = np.lib.format.read_array_header_1_0(fp)
+        else:            # (2,0)+; savez_compressed only emits >1.0 for giant headers
+            shape, _fortran, _dtype = np.lib.format.read_array_header_2_0(fp)
     return shape
 
 
 def _scan_one_file(f):
-    """Header-only shape scan of one .npz. Returns (path, n_positions, error_msg):
-    n is None (with a printed reason in error_msg) if the file is corrupt/empty/unreadable."""
+    """Header-only shape scan of one .npz. Returns (n_positions, None) on success or
+    (None, reason) for a corrupt/empty/unreadable file — exactly one field is set."""
     try:
         with zipfile.ZipFile(f) as zf:
             s_shape = _npz_member_shape(zf, 'states.npy')
             p_shape = _npz_member_shape(zf, 'policies.npy')
-        n = s_shape[0]
-        if (len(s_shape) != 4 or s_shape[1:] != (120, 8, 8) or
-                len(p_shape) != 2 or p_shape[1] != 4672 or n == 0):
-            return (f, None, f"Skipping corrupt file {f}: s={s_shape} p={p_shape}")
-        return (f, n, None)
+        # Validate shape BEFORE indexing s_shape[0] — a 0-d header must report as
+        # corrupt-with-shapes, not as an IndexError masquerading as a scan error.
+        if (len(s_shape) == 4 and s_shape[1:] == (120, 8, 8) and
+                len(p_shape) == 2 and p_shape[1] == 4672 and s_shape[0] > 0):
+            return (s_shape[0], None)
+        return (None, f"Skipping corrupt file {f}: s={s_shape} p={p_shape}")
     except Exception as e:
-        return (f, None, f"Error scanning {f}: {e}")
+        return (None, f"Error scanning {f}: {e}")
+
+
+def _scan_folder(folder_path):
+    """Scan one iteration folder's .npz files via the sidecar count cache
+    (_scan_cache.json: basename -> [n, mtime_ns, size]). Iteration folders are
+    immutable once their iteration completes, so after the first scan every later
+    call is a pure cache read — zero zip opens for old folders. Only SUCCESSFUL
+    (n>0) scans are cached; a corrupt/errored file is re-checked on every scan so a
+    TRANSIENT fault (EMFILE, an NFS/rsync hiccup, a numpy mismatch on a fresh box)
+    self-heals once fixed — a -1 verdict must NOT stick forever on an immutable folder.
+    Cache entries are keyed by mtime_ns+size, so a rewrite (migrate_aux.py / rsync)
+    self-invalidates, and a malformed/foreign entry falls through to a rescan.
+    Returns (plan_entries, n_files_seen): [(path, n)] in raw glob order (the seed-42
+    val split selects by file index — do NOT sort), and the total .npz count for
+    the caller's loud-failure guard."""
+    cache_path = os.path.join(folder_path, "_scan_cache.json")
+    try:
+        with open(cache_path) as fh:
+            cache = json.load(fh)
+    except Exception:
+        cache = {}
+    entries, dirty = [], False
+    files = glob.glob(os.path.join(folder_path, "*.npz"))
+    for f in files:
+        base = os.path.basename(f)
+        try:
+            st = os.stat(f)
+        except OSError:
+            continue
+        ent = cache.get(base)
+        if (isinstance(ent, list) and len(ent) == 3
+                and ent[1] == st.st_mtime_ns and ent[2] == st.st_size):
+            n = ent[0]                        # cache hit (only successful scans are cached → n>0)
+        else:
+            n, msg = _scan_one_file(f)
+            if n is None:                     # corrupt/transient: print + re-check next scan, never cache
+                print(msg)
+                continue
+            cache[base] = [n, st.st_mtime_ns, st.st_size]
+            dirty = True
+        entries.append((f, n))
+    if dirty:
+        try:                                  # atomic replace; failure = slow next scan, not wrong
+            with open(cache_path + ".tmp", "w") as fh:
+                json.dump(cache, fh)
+            os.replace(cache_path + ".tmp", cache_path)
+        except OSError as e:
+            print(f"  (scan cache write failed for {folder_path}: {e})")
+    return entries, len(files)
 
 
 def scan_window_files(data_dir, window_size=20):
@@ -130,21 +186,29 @@ def scan_window_files(data_dir, window_size=20):
         print("No iteration data folders found.")
         return []
     print(f"Data Window: last {len(active_folders)} iterations: {active_folders[0]} to {active_folders[-1]}")
-    all_files = []
+    # Per-folder cached, header-only, SERIAL scan. Serial: header parsing is pure-Python on
+    # ~128 cached bytes, so a thread pool measured 2.4–5x SLOWER (2026-07-03 review). Cached:
+    # old iter folders are immutable, so their counts come from _scan_cache.json with zero zip
+    # opens — only the newest folder's files ever get header-read. Order stays
+    # newest-iteration-first for the downstream cap/chunk.
+    plan, n_files_seen = [], 0
     for folder in reversed(active_folders):            # newest iteration first
-        all_files.extend(glob.glob(os.path.join(data_dir, folder, "*.npz")))
-    # Header-only, parallel scan: read each .npz's shape header (no body decompress) across a thread
-    # pool. The self-play server is dead during training so all cores are free, and header reads are
-    # I/O-bound (threads hide open/read latency). ThreadPoolExecutor.map preserves input order, so the
-    # plan stays newest-iteration-first for the downstream cap/chunk.
-    n_threads = min(32, (os.cpu_count() or 8))
-    plan = []
-    with ThreadPoolExecutor(max_workers=n_threads) as ex:
-        for f, n, err in ex.map(_scan_one_file, all_files):
-            if err:
-                print(err)
-            elif n is not None:
-                plan.append((f, n))
+        entries, n_seen = _scan_folder(os.path.join(data_dir, folder))
+        plan.extend(entries)
+        n_files_seen += n_seen
+    # Loud-failure guard: fire ONLY when files exist but NONE are valid — the systemic
+    # all-or-nothing fault (numpy header-API change, permissions, a stale mount) that
+    # would otherwise flow into "Skipping training (No Data)" and let the run keep
+    # looping with training silently disabled. A PARTIAL loss (some corrupt/old-format
+    # files) still trains on the valid remainder, exactly as before — we do NOT crash a
+    # recoverable window (format transitions, a fresh/crash-restart folder with partial
+    # shards). Combined with the no-cache-on-corrupt rule above, a fixed box self-heals
+    # on its next scan instead of staying wedged (2026-07-03 review).
+    if n_files_seen and not plan:
+        raise RuntimeError(
+            f"Scan found {n_files_seen} file(s) but ZERO were valid — systemic failure "
+            f"(numpy/header API, permissions, or a format mismatch); refusing to train "
+            f"on no data (see log above).")
     return plan
 
 
@@ -198,6 +262,7 @@ class ChessDataset(Dataset):
         skipped = 0
         thinned = 0
         game_id = 0
+        load_errors = 0
         for f, take in load_plan:
             try:
                 with np.load(f) as d:                  # pure arrays → no pickle needed
@@ -239,10 +304,14 @@ class ChessDataset(Dataset):
                 pos += take
                 game_id += 1
             except Exception as e:
+                load_errors += 1
                 print(f"Error loading {f}: {e}")
 
         if skipped:
             print(f"  ⚠️ Skipped {skipped} file(s) with non-finite (NaN/Inf) data.")
+        if load_errors:
+            print(f"  ⚠️ {load_errors} file(s) failed to load (see the 'Error loading' "
+                  f"lines above for the cause) — dataset is short those positions.")
 
         # Slice to actually-filled rows: a skipped or failed file must never leave
         # uninitialized np.empty garbage (which would train as NaN states / out-of-range

@@ -302,3 +302,8 @@ chess_migration.tgz
 # Per-box loop/phase resume state — each box (Vast main run, AWS bank) writes its OWN counter.
 # Tracking it makes the bank's run_state collide with Vast's on every pull. Keep it local-only.
 chess_ai/data/self_play/run_state.json
+
+# Per-folder scan-count cache (trainer.py header-scan speedup). Keyed by file mtime_ns, which git
+# does NOT preserve across checkout — a committed cache would mismatch every pulled file and just
+# add churn. Each box rebuilds its own on first scan. Keep it local-only.
+chess_ai/data/self_play/*/_scan_cache.json

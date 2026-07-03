@@ -195,8 +195,14 @@ def _mark_interventions(ax, key):
 
 
 def _int_xaxis(ax, it, mark=None):
-    ax.xaxis.set_major_locator(MultipleLocator(5))  # label every 5 iterations
-    ax.xaxis.set_minor_locator(MultipleLocator(1))  # unlabeled tick each iteration
+    # Adaptive tick base: every-5 labels in the normal 10–60-iter range, every iteration
+    # for short fresh-restart runs (a <5-iter run otherwise shows ONLY the '0' label),
+    # scaled up in steps of 5 for long runs so labels never crowd (span 300 → base 25).
+    span = int(np.max(it)) - int(np.min(it)) if len(it) else 0
+    base = 1 if span < 10 else 5 * max(1, round(span / 60))
+    ax.xaxis.set_major_locator(MultipleLocator(base))
+    if base > 1:
+        ax.xaxis.set_minor_locator(MultipleLocator(max(1, base // 5)))
     ax.set_xlabel("Iteration")
     if mark is not None:
         _mark_interventions(ax, mark)
