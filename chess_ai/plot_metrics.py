@@ -30,6 +30,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+from matplotlib.ticker import MultipleLocator
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
 # Paths anchored to this file so it works from repo root or chess_ai/.
@@ -194,7 +195,8 @@ def _mark_interventions(ax, key):
 
 
 def _int_xaxis(ax, it, mark=None):
-    ax.set_xticks(it)
+    ax.xaxis.set_major_locator(MultipleLocator(5))  # label every 5 iterations
+    ax.xaxis.set_minor_locator(MultipleLocator(1))  # unlabeled tick each iteration
     ax.set_xlabel("Iteration")
     if mark is not None:
         _mark_interventions(ax, mark)
