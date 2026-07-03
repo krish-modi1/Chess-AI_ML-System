@@ -14,6 +14,8 @@ import os
 import glob
 import sys
 import time
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 # Ensure we can import from the parent directory
 sys.path.append(os.getcwd())
@@ -80,6 +82,32 @@ AUX_W_PLIES = float(os.environ.get("AUX_W_PLIES", 0.0))  # plies remaining      
 AUX_W_REPLY = float(os.environ.get("AUX_W_REPLY", 0.0))  # opponent reply move     (masked CE)
 AUX_ON = (AUX_W_MAT > 0 or AUX_W_PLIES > 0 or AUX_W_REPLY > 0)
 
+def _npz_member_shape(zf, name):
+    """Read a .npy member's shape from its header WITHOUT decompressing the array body.
+    np.load(f)['states'].shape decompresses the whole array just to read .shape (~9x slower);
+    the shape lives in the ~128-byte .npy header at the member's start, so we stop reading there."""
+    with zf.open(name) as fp:
+        version = np.lib.format.read_magic(fp)
+        shape, _fortran, _dtype = np.lib.format._read_array_header(fp, version)
+    return shape
+
+
+def _scan_one_file(f):
+    """Header-only shape scan of one .npz. Returns (path, n_positions, error_msg):
+    n is None (with a printed reason in error_msg) if the file is corrupt/empty/unreadable."""
+    try:
+        with zipfile.ZipFile(f) as zf:
+            s_shape = _npz_member_shape(zf, 'states.npy')
+            p_shape = _npz_member_shape(zf, 'policies.npy')
+        n = s_shape[0]
+        if (len(s_shape) != 4 or s_shape[1:] != (120, 8, 8) or
+                len(p_shape) != 2 or p_shape[1] != 4672 or n == 0):
+            return (f, None, f"Skipping corrupt file {f}: s={s_shape} p={p_shape}")
+        return (f, n, None)
+    except Exception as e:
+        return (f, None, f"Error scanning {f}: {e}")
+
+
 def scan_window_files(data_dir, window_size=20):
     """Scan the last `window_size` iteration folders and return [(path, n_positions)] for every
     valid .npz, NEWEST-iteration-first (so a downstream cap/chunk keeps the most recent data).
@@ -105,20 +133,18 @@ def scan_window_files(data_dir, window_size=20):
     all_files = []
     for folder in reversed(active_folders):            # newest iteration first
         all_files.extend(glob.glob(os.path.join(data_dir, folder, "*.npz")))
+    # Header-only, parallel scan: read each .npz's shape header (no body decompress) across a thread
+    # pool. The self-play server is dead during training so all cores are free, and header reads are
+    # I/O-bound (threads hide open/read latency). ThreadPoolExecutor.map preserves input order, so the
+    # plan stays newest-iteration-first for the downstream cap/chunk.
+    n_threads = min(32, (os.cpu_count() or 8))
     plan = []
-    for f in all_files:
-        try:
-            with np.load(f, allow_pickle=True) as d:
-                s_shape = d['states'].shape
-                p_shape = d['policies'].shape
-            n = s_shape[0]
-            if (len(s_shape) != 4 or s_shape[1:] != (120, 8, 8) or
-                    len(p_shape) != 2 or p_shape[1] != 4672 or n == 0):
-                print(f"Skipping corrupt file {f}: s={s_shape} p={p_shape}")
-                continue
-            plan.append((f, n))
-        except Exception as e:
-            print(f"Error scanning {f}: {e}")
+    with ThreadPoolExecutor(max_workers=n_threads) as ex:
+        for f, n, err in ex.map(_scan_one_file, all_files):
+            if err:
+                print(err)
+            elif n is not None:
+                plan.append((f, n))
     return plan
 
 
@@ -174,7 +200,7 @@ class ChessDataset(Dataset):
         game_id = 0
         for f, take in load_plan:
             try:
-                with np.load(f, allow_pickle=True) as d:
+                with np.load(f) as d:                  # pure arrays → no pickle needed
                     s = d['states'][:take]
                     p = d['policies'][:take]
                     v = d['values'][:take]
