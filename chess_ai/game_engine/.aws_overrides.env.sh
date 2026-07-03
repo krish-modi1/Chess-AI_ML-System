@@ -57,7 +57,7 @@ export MAX_WORKER_LEAD=10
 # copy-on-write touches the numpy/list refcounts + holds prefetch buffers, inflating RSS far above the
 # printed f16-array size (it under-counts true process RAM). Fewer workers = much less RAM, no speed loss.
 export TRAIN_BATCH_SIZE=1536
-export TRAIN_DL_WORKERS=60
+export TRAIN_DL_WORKERS=90
 export TRAIN_DL_PREFETCH=2
 # RAM belt: cap each loaded train chunk to ~2M raw pos (~2 chunks at the current window). Since
 # main.py now uses sharing_strategy='file_descriptor' (no /dev/shm route — that was the iter-43
@@ -70,7 +70,7 @@ export TRAIN_CHUNK_POSITIONS=2500000
 # dilutes the post-fix teacher signal. 30 was the proven pre-iter-40 default with a tiny train/val gap,
 # so reverting is overfitting-safe. NOTE: only iters 41+ are post-fix, so 30 still includes ~pre-fix
 # data — narrow further if the goal is purely post-fix data. Now fits ~1 RAM chunk (faster, no chunking).
-export TRAIN_WINDOW=30
+export TRAIN_WINDOW=35
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
 export TRAIN_MIN_ITER=0
@@ -84,9 +84,9 @@ export TRAIN_FROM_LINEAGE=1
 
 # Arena: 50 workers × 4 games = 200 games (tighter promotion gate). 4/worker = 2 White + 2 Black,
 #   stays color-balanced. Stockfish eval kept at 64×... (its own knobs below).
-export EVAL_WORKERS=50
-export GAMES_PER_EVAL_WORKER=6
-export STOCKFISH_WORKERS=50
+export EVAL_WORKERS=75
+export GAMES_PER_EVAL_WORKER=4
+export STOCKFISH_WORKERS=75
 export STOCKFISH_GAMES=300
 
 # Stockfish/Elo ONLY on promotion (EVERY_ITER=0): a rejected iter leaves best_model unchanged, so its
@@ -94,5 +94,5 @@ export STOCKFISH_GAMES=300
 # BayesElo is reliable, measure the champion once per champion (on promotion); the logger carries the
 # last Elo forward on non-promoted iters (elo_measured=false). Arena still runs every iter (the gate).
 export STOCKFISH_EVERY_ITER=0
-export STOCKFISH_ELO=2600
+export STOCKFISH_ELO=2500
 export STOCKFISH_NODES=0
