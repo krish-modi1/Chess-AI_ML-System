@@ -129,7 +129,8 @@ export TRAIN_FROM_LINEAGE=0   # OFF for the iter-3 rollback: train each candidat
                               # the champ 1524→1390→1294 on diffuse data — re-enable once on-distribution
                               # data proves the targets are good (per-iter Elo holding/climbing).
 export TEMP_MOVES=8           # was 16. Halve the random-opening window to keep self-play on-distribution.
-export TRAIN_EPOCHS=3          # iter-40: 2→3 to extract more from the decorrelated buffer per iter
+export TRAIN_EPOCHS=1          # iter-67: 3→1 for gentler per-iter steps under lineage (epochs=3 + lineage
+                              # overshot into a losing drift at iters 57-62). Small steps that accumulate.
                               # (cap=20 subsample prevents the overfitting that 4 epochs caused at
                               # iter-1). Watch the Va-P/Va-Acc gap — revert if val degrades vs train.
 export TRAIN_LR=1.5e-4         # iter-24: LOWERED 3e-4→1.5e-4. 3e-4 OVER-optimized a mature net (~2438):
@@ -137,8 +138,9 @@ export TRAIN_LR=1.5e-4         # iter-24: LOWERED 3e-4→1.5e-4. 3e-4 OVER-optim
                               # strength dropped = Goodhart/over-optimization). AZ's final LR was 2e-4,
                               # KataGo 6e-5 — low LR for mature nets. 1.5e-4 sits between the 1e-4 that
                               # froze the policy (pre-fix) and the 3e-4 that over-cooked it.
-export KL_ANCHOR_BETA=1.0      # KL(reference ‖ candidate) penalty weight; 0 disables. Kept at 1.0 — the
-                              # change this round is the REFERENCE, not β, for clean attribution.
+export KL_ANCHOR_BETA=0.75     # iter-67: 1.0→0.75. β=1.0 anchor-to-champion was a trust region too tight
+                              # to let candidates diverge enough to clear the 55% gate (10-iter promotion
+                              # drought since iter-56). Loosen it so the candidate can depart the champion.
 # REFERENCE RESET (iter-22): anchor the KL reference to the LIVE champion instead of the stale 1800
 # prior. The net is ~2438 — anchoring to 1800 was pulling it back toward beginner play (accuracy rose
 # but it couldn't out-diverge the champion to win → no promotions). Anchoring to current strong play

@@ -43,7 +43,7 @@ export SERVER_DEADLOCK_TIMEOUT=600
 # while keeping top-move diversity. Wider-but-sharper = more, cleaner opening variety. Watch
 # check_diversity.py next iter (don't let openings narrow). Arena/eval still play greedy (T=0).
 export TEMP_MOVES=20
-export SELFPLAY_TEMPERATURE=0.5
+export SELFPLAY_TEMPERATURE=0.75
 
 # Opening mix: 5% of games seed from the forced book, 95% play on-distribution (KataGo/Lc0 target).
 # 0.05 was tried at iter-41 and collapsed to 96% g1f3 — BUT the root cause was a C++ bug, not the value:
@@ -91,7 +91,7 @@ export TRAIN_MIN_ITER=0
 # only on the FIRST rejection: lineage continues from the rejected candidate (no wasted learning)
 # instead of resetting to champion. KL-anchor stays pinned to pretrained. Reversible: flip to 0 to
 # reset to champion if a lineage ever stalls (arena gate keeps self-play clean throughout).
-export TRAIN_FROM_LINEAGE=0
+export TRAIN_FROM_LINEAGE=1
 
 # Arena: 50 workers × 4 games = 200 games (tighter promotion gate). 4/worker = 2 White + 2 Black,
 #   stays color-balanced. Stockfish eval kept at 64×... (its own knobs below).
