@@ -77,7 +77,7 @@ export TRAIN_DL_WORKERS=16
 export TRAIN_DL_PREFETCH=4   # batches buffered per worker (local launchers set 1)
 
 # Loop / eval / rules — identical on all platforms.
-export SIMULATIONS=2000        # FULL/recorded search ("long" sims, 25% of moves → training targets).
+export SIMULATIONS=2000        # FULL/recorded search ("long" sims, 35% of moves → training targets).
                               # TEACHER-STRENGTH TEST (iter-28): big jump 1200→2000 to check if a clearly
                               # stronger teacher can push the 2438 net past its ceiling. WATCH: search_kl
                               # rising off ~0.35 + WR climbing = teacher was the bottleneck (keep pushing
@@ -178,7 +178,9 @@ export CPUCT_FACTOR=1.0        # 3) PULLED BACK 2.0→1.0 (AlphaZero baseline). 
                                #    effect on target diffuseness, and 2.0 only adds off-distribution exploration.
 export FORCED_PLAYOUT_K=0      # 4) PULLED BACK 2.0→0 (disabled). No effect on diffuseness, most-novel, and it
                                #    spreads visits (against the on-distribution thesis). See selfplay-offdistribution memory.
-export FULL_SEARCH_PROB=0.25    # 2) playout-cap: 25% of moves full+recorded, rest fast+unrecorded (Dirichlet off)
+export FULL_SEARCH_PROB=0.35    # 2) playout-cap: iter-67 25%→35% — search probe kept flagging a weak teacher
+                               #    (top1-agree ~67%, KL(MCTS‖net) ~0.9, search barely improves the net). More
+                               #    full+recorded moves = more/better 2000-sim targets. Rest fast+unrecorded (Dirichlet off)
 export FAST_SIMULATIONS=200     #    fast-search ("short") sim count — back to 200 to afford the 2000 full
                                #    search (teacher test). Proven fine through iter-23; diversity stays healthy.
 export SWA_ENABLE=1             # 5) stochastic weight averaging → offline swa_model.pth (probe vs candidate)

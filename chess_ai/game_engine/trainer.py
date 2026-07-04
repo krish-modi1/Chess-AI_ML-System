@@ -546,24 +546,31 @@ def train_model(data_path="data/self_play",
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if 'scheduler_state_dict' in checkpoint:
                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-                # The restored optimizer + scheduler state PIN the LR to last run's value: the
-                # param-group lr AND the cosine's base_lrs are both saved state. So changing TRAIN_LR
-                # (e.g. raising it to break a plateau) silently has NO effect — base_lrs stays old and
-                # scheduler.step() keeps recomputing from it. Detect a changed TRAIN_LR and rebase the
-                # cosine to it, keeping the restored progress (last_epoch) + AdamW momentum buffers.
-                if any(abs(b - lr) > 1e-12 for b in scheduler.base_lrs):
-                    scheduler.base_lrs = [lr for _ in scheduler.base_lrs]
-                    # float() is REQUIRED: np.cos returns np.float64, and a numpy scalar written into
-                    # the optimizer/scheduler state gets pickled into the checkpoint → torch.load(
-                    # weights_only=True) then rejects it ("Unsupported global numpy...scalar"). Keep it
-                    # a plain Python float so checkpoints stay weights_only-loadable.
-                    cur = float(scheduler.eta_min + (lr - scheduler.eta_min) *
-                                (1 + np.cos(np.pi * scheduler.last_epoch / scheduler.T_max)) / 2)
-                    for pg in optimizer.param_groups:
-                        pg['lr'] = cur
-                    scheduler._last_lr = [cur for _ in optimizer.param_groups]
-                    print(f"  ⚙️  TRAIN_LR changed → rebased cosine base to {lr:.1e}; current LR now {cur:.2e}")
-                print(f"Scheduler restored: step {scheduler.last_epoch}/{scheduler.T_max} | LR: {scheduler.get_last_lr()[0]:.2e}")
+                # load_state_dict OVERWRITES the fresh T_max (line 538) and base_lrs with the SAVED
+                # ones, and both go stale. The saved T_max is from whenever this cosine was first
+                # created (old ITERATIONS/epochs/batch config); with last_epoch accumulated across
+                # every iteration since, a stale-small T_max makes the cosine cycle and PIN the LR
+                # near eta_min — the iter-67 ~2e-5 floor (saved T_max=112 vs last_epoch=5057). And a
+                # changed TRAIN_LR silently has no effect while base_lrs holds the old value. Fix both
+                # on every restore: refresh T_max to THIS run's horizon and rebase base_lrs to the
+                # current TRAIN_LR, keeping restored progress (last_epoch) + AdamW momentum buffers.
+                # If restored progress has already run past the refreshed horizon, restart the cosine
+                # so it can't sit in an oscillating tail.
+                scheduler.T_max = max(total_steps, 1)
+                scheduler.base_lrs = [lr for _ in scheduler.base_lrs]
+                if scheduler.last_epoch >= scheduler.T_max:
+                    scheduler.last_epoch = 0
+                # float() is REQUIRED: np.cos returns np.float64, and a numpy scalar written into the
+                # optimizer/scheduler state gets pickled into the checkpoint → torch.load(
+                # weights_only=True) then rejects it ("Unsupported global numpy...scalar"). Keep it a
+                # plain Python float so checkpoints stay weights_only-loadable.
+                cur = float(scheduler.eta_min + (lr - scheduler.eta_min) *
+                            (1 + np.cos(np.pi * scheduler.last_epoch / scheduler.T_max)) / 2)
+                for pg in optimizer.param_groups:
+                    pg['lr'] = cur
+                scheduler._last_lr = [cur for _ in optimizer.param_groups]
+                print(f"Scheduler restored: step {scheduler.last_epoch}/{scheduler.T_max} | "
+                      f"LR: {cur:.2e} (T_max refreshed to run horizon, base={lr:.1e})")
         except (ValueError, KeyError, RuntimeError) as e:
             print(f"  ⚠️ Fresh optimizer/scheduler (saved state incompatible — e.g. arch change): {e}")
     
