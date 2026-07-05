@@ -30,6 +30,20 @@ export CUDA_BATCH_SIZE
 # more leaves/sec. Don't raise it — fuller batches at a longer timeout are a vanity metric. [[selfplay-gpu-bottleneck]]
 export CUDA_TIMEOUT_INFERENCE=0.02
 
+# iter-71 OOM fix: training OOM'd at the FIRST forward with ~22.6GB already held and only ~72MB free —
+# and batch 1536→1280 freed just 60MB, proving the batch is NOT the hog (self-play VRAM residue +
+# fragmentation is). expandable_segments lets the allocator use fragmented gaps instead of failing a
+# small alloc when memory is technically available (the error's own suggestion). Set before torch init
+# (this override is sourced before python starts). If it STILL OOMs, the residue isn't draining →
+# investigate the self-play→training teardown, or raise VRAM_DRAIN_TARGET_GB so training waits for more.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# Companion: the pre-training VRAM drain (main.py) defaults to waiting only for 8GB free, then starts
+# — but training at batch 1280 needs MORE than that leftover sliver (it OOM'd 100MB short at ~8GB
+# free). Wait for 10GB free so self-play residue drains further (the loop calls empty_cache each pass)
+# and training has real headroom. iters 68-70 reached ~10GB, so it's attainable; worst case is a 120s
+# wait then proceed. Raise toward 12 if it still OOMs.
+export VRAM_DRAIN_TARGET_GB=10
+
 # Server self-kill if it processes NO batch for this long (a real hang). Default is 1800s; lowered
 # to 600 so a winddown straggler-hang is detected and salvaged (main.py advances to training on the
 # games already on disk) in ~10min instead of ~30. The server never legitimately idles this long
