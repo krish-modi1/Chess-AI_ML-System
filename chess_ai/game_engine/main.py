@@ -876,7 +876,7 @@ def run_stockfish_eval_gpu(model_path, num_games, stockfish_path, sims, sf_elo, 
 
 def run_arena_server_worker(worker_id, n_games, cand_in_q, cand_out_q, champ_in_q, champ_out_q,
                             sims, worker_batch, max_moves, result_q, cand_shm, champ_shm,
-                            tally=None, total_games=0, stop_flag=None):
+                            tally=None, total_games=0, stop_flag=None, sims_champ=None):
     """Play n_games of Candidate-vs-Champion. Each model's MCTS inference is routed to its OWN
     shared GPU InferenceServer (candidate server + champion server), so the GPU holds exactly 2
     model copies regardless of worker count — vs the old inline path that loaded 2 models ×
@@ -889,7 +889,9 @@ def run_arena_server_worker(worker_id, n_games, cand_in_q, cand_out_q, champ_in_
     np.random.seed(seed); random.seed(seed)
     cand = MCTSWorker(worker_id, cand_in_q, cand_out_q, simulations=sims, batch_size=worker_batch,
                       seed=seed, shm_inp=cand_shm[0], shm_pol=cand_shm[1], shm_val=cand_shm[2])
-    champ = MCTSWorker(worker_id, champ_in_q, champ_out_q, simulations=sims, batch_size=worker_batch,
+    champ = MCTSWorker(worker_id, champ_in_q, champ_out_q,
+                       simulations=(sims_champ if sims_champ is not None else sims),
+                       batch_size=worker_batch,
                        seed=seed, shm_inp=champ_shm[0], shm_pol=champ_shm[1], shm_val=champ_shm[2])
     w = d = l = fd = 0
     try:
@@ -984,7 +986,7 @@ def run_arena_server_worker(worker_id, n_games, cand_in_q, cand_out_q, champ_in_
     result_q.put({"wins": w, "draws": d, "losses": l, "forced_draws": fd})
 
 
-def run_arena_eval_gpu(cand_model, champ_model, num_games, sims, max_moves):
+def run_arena_eval_gpu(cand_model, champ_model, num_games, sims, max_moves, sims_champ=None, early_stop=True):
     """Server-routed arena: candidate on one GPU InferenceServer, champion on another (2 model
     copies total), CPU arena workers route each move to the right server. Returns aggregate
     {wins, draws, losses, forced_draws} from the candidate's perspective."""
@@ -1002,12 +1004,13 @@ def run_arena_eval_gpu(cand_model, champ_model, num_games, sims, max_moves):
     result_q = mp.Queue()
     tally = mp.Array('i', 4)   # shared running [wins, draws, losses, forced_draws] across workers
     stop_flag = mp.Value('i', 0)   # arena early-stop: 0=run, 1=eliminated(reject), 2=clinched(promote)
+    sf = stop_flag if early_stop else None   # diagnostic runs the FULL N games (no gate early-stop)
     workers = []
     for i in range(n_workers):
         p = mp.Process(target=run_arena_server_worker,
                        args=(i, per[i], cand_server.input_queue, cand_wq[i],
                              champ_server.input_queue, champ_wq[i], sims, WORKER_BATCH_SIZE,
-                             max_moves, result_q, cand_shm, champ_shm, tally, num_games, stop_flag))
+                             max_moves, result_q, cand_shm, champ_shm, tally, num_games, sf, sims_champ))
         p.start(); workers.append(p)
 
     totals = {"wins": 0, "draws": 0, "losses": 0, "forced_draws": 0}
@@ -1429,6 +1432,40 @@ if __name__ == "__main__":
     if not os.path.exists(BEST_MODEL):
         print("Initializing random model...")
         torch.save(ChessCNN().state_dict(), BEST_MODEL)
+
+    # ── Search-saturation diagnostic (SIMS_DIAGNOSTIC=1) ──────────────────────────────────────
+    # Does deeper MCTS actually play STRONGER for the current champion? Play champion @ HIGH sims
+    # vs the SAME champion @ LOW sims (color-balanced, greedy), then EXIT — touches no model file
+    # and never enters the training loop. HIGH ≈ 50% → search SATURATED (the ceiling is the value
+    # function, not depth; dropping self-play sims 2000→800 costs ~nothing). HIGH ≫ 55% → depth
+    # buys real strength (dropping sims sacrifices it). On the box (foreground, NOT --background):
+    #   SIMS_DIAGNOSTIC=1 SIMS_HIGH=2000 SIMS_LOW=800 DIAG_GAMES=100 bash chess_ai/game_engine/run_aws.sh
+    if os.environ.get("SIMS_DIAGNOSTIC", "0") == "1":
+        import math
+        hi = int(os.environ.get("SIMS_HIGH", "2000"))
+        lo = int(os.environ.get("SIMS_LOW", "800"))
+        gm = int(os.environ.get("DIAG_GAMES", "100"))
+        print("=" * 72)
+        print(f"SEARCH-SATURATION DIAGNOSTIC — champion @ {hi} sims  vs  same champion @ {lo} sims")
+        print(f"  model = {BEST_MODEL}   games = {gm}   (the HIGH-sims side's score is reported)")
+        print("=" * 72)
+        r = run_arena_eval_gpu(BEST_MODEL, BEST_MODEL, gm, hi, MAX_MOVES_PER_GAME,
+                               sims_champ=lo, early_stop=False)
+        w, d, l, fd = r["wins"], r["draws"], r["losses"], r["forced_draws"]
+        tot = w + d + l + fd
+        wr = (w + 0.5 * d + 0.5 * fd) / tot if tot else 0.0
+        se = math.sqrt(max(wr * (1.0 - wr), 1e-9) / tot) if tot else 0.0
+        print("\n" + "=" * 72)
+        print(f"RESULT: HIGH({hi}) scored {100*wr:.1f}% ± {196*se:.1f}%  vs  LOW({lo})"
+              f"   [W-D-L-FD {w}-{d}-{l}-{fd}, {tot} games]")
+        if wr - 1.96 * se <= 0.55:
+            print(f"VERDICT: search looks SATURATED at {lo} sims — deeper search barely wins. Dropping "
+                  f"self-play sims to {lo} costs ~nothing; the plateau ceiling is the VALUE function, not depth.")
+        else:
+            print(f"VERDICT: depth MATTERS — {hi}-sim play is clearly stronger than {lo}. Dropping self-play "
+                  f"sims to {lo} sacrifices real teacher strength; keep sims high.")
+        print("=" * 72)
+        sys.exit(0)
 
     timeout_handler.start()
     print(f"⏱️ Deadlock timeout: {timeout_handler.timeout_seconds/3600:.0f}h per iteration")
