@@ -648,6 +648,7 @@ def train_model(data_path="data/self_play",
         tr_p = tr_v = tr_acc = g_norm = tr_kl = 0.0
         tr_mat = tr_plies = tr_reply = 0.0
         n_tr = 0
+        nonfinite_skipped = 0
 
         train_bar = tqdm(_train_batches(), total=batches_per_epoch,
                          desc=f"  train {epoch+1}/{epochs}", leave=False, ncols=88, unit='bat')
@@ -657,6 +658,14 @@ def train_model(data_path="data/self_play",
             target_values   = batch['value'].to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
+
+            # Snapshot BatchNorm running stats BEFORE the forward. An fp16-autocast overflow inside
+            # model(states) writes inf/NaN into BN running_mean/var, which update in forward() where
+            # the GradScaler (it only guards the optimizer step) cannot protect them. If this batch's
+            # loss comes out non-finite we restore these and skip the batch — one bad batch otherwise
+            # permanently NaNs eval-mode inference (iter-70: 70 BN buffers→NaN, Va-Acc 0.1%, arena 0%,
+            # then the poisoned candidate spirals via lineage). Buffers are tiny → negligible cost.
+            bn_state = [(buf, buf.detach().clone()) for _, buf in model.named_buffers()]
 
             # Anchor logits FIRST (no_grad/fp16), freed before training activations accumulate,
             # so only the (B,4672) log-probs (~38 MB) persist — no VRAM overlap with backward.
@@ -708,6 +717,17 @@ def train_model(data_path="data/self_play",
                     loss = loss + KL_ANCHOR_BETA * kl
                     tr_kl += float(kl.item())
 
+            # An fp16 forward overflow makes this batch's loss non-finite AND has already poisoned the
+            # model's BN running stats (updated in forward(), out of the GradScaler's reach). Roll the
+            # BN buffers back to their pre-forward values and skip the batch — never backprop a
+            # non-finite loss. This turns the iter-70 silent whole-model NaN collapse into a handled,
+            # counted skip; the epoch metrics below aren't poisoned either (we continue before them).
+            if not torch.isfinite(loss):
+                for buf, saved in bn_state:
+                    buf.copy_(saved)
+                nonfinite_skipped += 1
+                continue
+
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
@@ -727,6 +747,10 @@ def train_model(data_path="data/self_play",
             n_tr   += 1
             train_bar.set_postfix(p=f"{p_loss.item():.3f}", v=f"{v_loss.item():.3f}",
                                    acc=f"{acc*100:.1f}%")
+
+        if nonfinite_skipped:
+            print(f"  ⚠️ {nonfinite_skipped} batch(es) had a non-finite loss (fp16 overflow) — "
+                  f"skipped + BN running stats rolled back (no corruption; model stays clean).")
 
         # ── Val pass ───────────────────────────────────────────────────────────
         model.eval()

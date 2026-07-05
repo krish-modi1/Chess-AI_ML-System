@@ -160,6 +160,18 @@ def cleanup_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+def _params_finite(path):
+    """True iff every tensor in the checkpoint is finite. Guards against training from a poisoned
+    lineage base: if candidate.pth has NaN/Inf params (e.g. BN buffers from an fp16 forward
+    overflow — see the batchnorm-nan-poisoning failure mode), lineage would train NaN every
+    iteration and spiral. On any load error, treat as not-finite so we fall back to the champion."""
+    try:
+        ck = torch.load(path, map_location='cpu', weights_only=True)
+        sd = ck.get('model_state_dict', ck) if isinstance(ck, dict) else ck
+        return all(torch.isfinite(v).all() for v in sd.values() if torch.is_tensor(v))
+    except Exception:
+        return False
+
 def _promote_best():
     """Copy candidate → best, unless NO_PROMOTE (dry-run eval that must not mutate the champion)."""
     if NO_PROMOTE:
@@ -1250,9 +1262,14 @@ def run_training_phase(iteration):
     # gains compound.
     train_base = BEST_MODEL
     if TRAIN_FROM_LINEAGE and os.path.exists(CANDIDATE_MODEL):
-        train_base = CANDIDATE_MODEL
-        _anc = "CHAMPION (best_model) [reference-reset]" if anchor_to_champion else "pretrained-1800"
-        print(f"  Train-from-lineage: base = candidate.pth  |  KL anchor = {_anc}")
+        if _params_finite(CANDIDATE_MODEL):
+            train_base = CANDIDATE_MODEL
+            _anc = "CHAMPION (best_model) [reference-reset]" if anchor_to_champion else "pretrained-1800"
+            print(f"  Train-from-lineage: base = candidate.pth  |  KL anchor = {_anc}")
+        else:
+            print("  ⚠️ candidate.pth has non-finite params (NaN/Inf) — training from the CHAMPION "
+                  "instead. A poisoned lineage base trains NaN every iteration (the iter-70 BN "
+                  "overflow). Delete candidate.pth to reset the lineage cleanly.")
 
     p_loss, v_loss, train_metrics = train_model(data_path=DATA_DIR,
                 input_model_path=train_base,
