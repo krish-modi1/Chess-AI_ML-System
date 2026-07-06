@@ -288,11 +288,27 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                 for u in opening.split():
                     if game.is_over:
                         break
+                    # SEARCH this book position (full SIMULATIONS, set at line 276) to RECORD a
+                    # policy+value target, then PLAY the forced book move u (not the search pick) so the
+                    # opening stays diverse. Mirrors the main loop's record (state/policy/turn). Book
+                    # plies used to be pushed UNRECORDED → book games were missing their opening from the
+                    # npz; now the WHOLE game is saved. use_dirichlet=False → a clean target (the book
+                    # already supplies the exploration; play is forced, so no root noise is needed).
+                    history_snapshot = list(position_history)
+                    _, mcts_policy = worker.search(game, temperature=0.0,
+                                                   history=history_snapshot, use_dirichlet=False)
+                    current_turn = game.turn_player
+                    state_tensor = game.to_tensor(history_snapshot)
                     if not game.push(u):
                         print(f" [Worker {worker_id}] ⚠️ book move {u} rejected ({opening}) — ending opening")
                         break
                     worker.advance_root(u)
                     position_history.appendleft(game.board.copy())
+                    game_data.append({
+                        "state": state_tensor,
+                        "policy": mcts_policy,
+                        "turn": current_turn,
+                    })
 
             while not game.is_over:
                 if len(game.moves) >= MAX_MOVES_PER_GAME:
