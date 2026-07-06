@@ -1246,6 +1246,16 @@ def run_training_phase(iteration):
         free, total = torch.cuda.mem_get_info(0)
         free_gb = free / (1024 ** 3)
         total_gb = total / (1024 ** 3)
+        # DIAGNOSTIC (iter-72 OOM hunt): the training process OOM'd holding ~22.9GB, but self-play GPU
+        # lives in killed subprocesses, so where is it? memory_allocated/reserved = live/cached tensors
+        # in THIS process's allocator; mem_get_info free = whole-device free across ALL processes.
+        #   allocated≫0  → THIS process leaks across iterations (training state never freed).
+        #   allocated≈0 but free≈0 → a leftover subprocess (self-play/eval) still holds the device.
+        _alloc = torch.cuda.memory_allocated(0) / (1024 ** 3)
+        _resv = torch.cuda.memory_reserved(0) / (1024 ** 3)
+        print(f"  [VRAM diag] this-process allocated={_alloc:.2f}GB reserved={_resv:.2f}GB | "
+              f"device free={free_gb:.2f}/{total_gb:.2f}GB → "
+              f"{'LEAK IN THIS PROCESS' if _alloc > 5 else 'held by ANOTHER process (leftover subproc)'}")
         # Target enough free VRAM for training. 8 GB suits the 22 GB L4; on a small GPU
         # (e.g. 6 GB laptop) 8 GB is unreachable, so scale to 70% of total. Env-overridable.
         target_gb = float(os.environ.get("VRAM_DRAIN_TARGET_GB", min(8.0, total_gb * 0.7)))
