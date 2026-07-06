@@ -57,7 +57,7 @@ export SERVER_DEADLOCK_TIMEOUT=600
 # while keeping top-move diversity. Wider-but-sharper = more, cleaner opening variety. Watch
 # check_diversity.py next iter (don't let openings narrow). Arena/eval still play greedy (T=0).
 export TEMP_MOVES=20
-export SELFPLAY_TEMPERATURE=0.75
+export SELFPLAY_TEMPERATURE=1.0
 
 # Opening mix: 5% of games seed from the forced book, 95% play on-distribution (KataGo/Lc0 target).
 # 0.05 was tried at iter-41 and collapsed to 96% g1f3 — BUT the root cause was a C++ bug, not the value:
