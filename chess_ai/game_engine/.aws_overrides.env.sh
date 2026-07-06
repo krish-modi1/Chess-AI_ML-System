@@ -5,7 +5,7 @@
 #   OOM over a long run, the per-iteration RAM creep needs a real fix (or a periodic restart).
 #   GPU stays queue-starved (latency-bound, sm~72%) but RAM, not the GPU, is the ceiling on this box.
 #   CUDA_BATCH auto = NUM_WORKERS×8 (< VRAM_CAP 16000, fits 24GB easily). [[selfplay-gpu-bottleneck]]
-export NUM_WORKERS=200
+export NUM_WORKERS=160
 # Reserve 8 of the 96 cores for the GPU-feeding inference server (1 gather + ~6 stream executors).
 # The server feed isn't the bottleneck (gather sits ~14% idle), but keeping it off the worker cores
 # avoids the deadlock-timeout-self-kill failure mode. Workers get the remaining 88.
@@ -18,6 +18,20 @@ export CUDA_BATCH_SIZE
 # latency-bound (workers block on each round-trip), so a SHORTER timeout = lower per-round-trip wait =
 # more leaves/sec. Don't raise it — fuller batches at a longer timeout are a vanity metric. [[selfplay-gpu-bottleneck]]
 export CUDA_TIMEOUT_INFERENCE=0.02
+
+# iter-71 OOM fix: training OOM'd at the FIRST forward with ~22.6GB already held and only ~72MB free —
+# and batch 1536→1280 freed just 60MB, proving the batch is NOT the hog (self-play VRAM residue +
+# fragmentation is). expandable_segments lets the allocator use fragmented gaps instead of failing a
+# small alloc when memory is technically available (the error's own suggestion). Set before torch init
+# (this override is sourced before python starts). If it STILL OOMs, the residue isn't draining →
+# investigate the self-play→training teardown, or raise VRAM_DRAIN_TARGET_GB so training waits for more.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# Companion: the pre-training VRAM drain (main.py) defaults to waiting only for 8GB free, then starts
+# — but training at batch 1280 needs MORE than that leftover sliver (it OOM'd 100MB short at ~8GB
+# free). Wait for 10GB free so self-play residue drains further (the loop calls empty_cache each pass)
+# and training has real headroom. iters 68-70 reached ~10GB, so it's attainable; worst case is a 120s
+# wait then proceed. Raise toward 12 if it still OOMs.
+export VRAM_DRAIN_TARGET_GB=10
 
 # Server self-kill if it processes NO batch for this long (a real hang). Default is 1800s; lowered
 # to 600 so a winddown straggler-hang is detected and salvaged (main.py advances to training on the
@@ -45,7 +59,7 @@ export OPENING_BOOK_PROB=0.05
 
 # Worker pacing: cap a fast worker to ≤3 games ahead of the slowest (was 5) — tighter spread so
 # fewer workers finish all 10 and idle while stragglers catch up = less tail-idle at iter end.
-export MAX_WORKER_LEAD=10
+export MAX_WORKER_LEAD=4
 
 # Training: batch 2048→1536 for the Net2Net 20x320 net. 320 vs 256 filters = ~1.25× activation/sample,
 # AND the KL-anchor (β=1.0) loads a SECOND 320-model copy + forward pass during training — so the 2048
@@ -56,7 +70,10 @@ export MAX_WORKER_LEAD=10
 # and the GPU is the bottleneck — 16 workers keep it fed. 90 was the RAM-balloon culprit: each worker
 # copy-on-write touches the numpy/list refcounts + holds prefetch buffers, inflating RSS far above the
 # printed f16-array size (it under-counts true process RAM). Fewer workers = much less RAM, no speed loss.
-export TRAIN_BATCH_SIZE=1536
+export TRAIN_BATCH_SIZE=1280   # iter-71: 1536→1280 after a CUDA OOM at the START of training (first
+                              # forward, 44MB free of 24GB). 1536 was always at the edge for the 20x320
+                              # net + the KL-anchor's second model copy; this restart tipped over. 1280
+                              # cuts activation mem ~17% (≫ the 120MB overshoot). Drop to 1024 if it recurs.
 export TRAIN_DL_WORKERS=90
 export TRAIN_DL_PREFETCH=2
 # RAM belt: cap each loaded train chunk to ~2M raw pos (~2 chunks at the current window). Since
@@ -70,7 +87,7 @@ export TRAIN_CHUNK_POSITIONS=2500000
 # dilutes the post-fix teacher signal. 30 was the proven pre-iter-40 default with a tiny train/val gap,
 # so reverting is overfitting-safe. NOTE: only iters 41+ are post-fix, so 30 still includes ~pre-fix
 # data — narrow further if the goal is purely post-fix data. Now fits ~1 RAM chunk (faster, no chunking).
-export TRAIN_WINDOW=30
+export TRAIN_WINDOW=12
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
 export TRAIN_MIN_ITER=0
