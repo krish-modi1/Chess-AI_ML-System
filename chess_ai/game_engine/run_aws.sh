@@ -16,7 +16,7 @@ cat > "$OVR" <<'ENV'
 #   OOM over a long run, the per-iteration RAM creep needs a real fix (or a periodic restart).
 #   GPU stays queue-starved (latency-bound, sm~72%) but RAM, not the GPU, is the ceiling on this box.
 #   CUDA_BATCH auto = NUM_WORKERS×8 (< VRAM_CAP 16000, fits 24GB easily). [[selfplay-gpu-bottleneck]]
-export NUM_WORKERS=160
+export NUM_WORKERS=120
 # Reserve 8 of the 96 cores for the GPU-feeding inference server (1 gather + ~6 stream executors).
 # The server feed isn't the bottleneck (gather sits ~14% idle), but keeping it off the worker cores
 # avoids the deadlock-timeout-self-kill failure mode. Workers get the remaining 88.
@@ -66,7 +66,7 @@ export SELFPLAY_TEMPERATURE=1.0
 # at 0.5 the on-distribution HALF then held diversity on its own (g1f3 24%, not 96% — iter-42), proving
 # sampling now carries it. So the book is no longer the sole source → drop to 0.05. WATCH
 # check_diversity.py on the next iter; raise back if the net's sampled openings narrow. [[opening-book-diversity]]
-export OPENING_BOOK_PROB=0.05
+export OPENING_BOOK_PROB=0.1
 
 # Worker pacing: cap a fast worker to ≤3 games ahead of the slowest (was 5) — tighter spread so
 # fewer workers finish all 10 and idle while stragglers catch up = less tail-idle at iter end.
@@ -85,7 +85,7 @@ export TRAIN_BATCH_SIZE=1280   # iter-71: 1536→1280 after a CUDA OOM at the ST
                               # forward, 44MB free of 24GB). 1536 was always at the edge for the 20x320
                               # net + the KL-anchor's second model copy; this restart tipped over. 1280
                               # cuts activation mem ~17% (≫ the 120MB overshoot). Drop to 1024 if it recurs.
-export TRAIN_DL_WORKERS=90
+export TRAIN_DL_WORKERS=120
 export TRAIN_DL_PREFETCH=2
 # RAM belt: cap each loaded train chunk to ~2M raw pos (~2 chunks at the current window). Since
 # main.py now uses sharing_strategy='file_descriptor' (no /dev/shm route — that was the iter-43
