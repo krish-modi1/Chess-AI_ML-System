@@ -77,12 +77,13 @@ export TRAIN_DL_WORKERS=16
 export TRAIN_DL_PREFETCH=4   # batches buffered per worker (local launchers set 1)
 
 # Loop / eval / rules — identical on all platforms.
-export SIMULATIONS=800        # FULL/recorded search ("long" sims, 35% of moves → training targets).
-                              # TEACHER-STRENGTH TEST (iter-28): big jump 1200→2000 to check if a clearly
-                              # stronger teacher can push the 2438 net past its ceiling. WATCH: search_kl
-                              # rising off ~0.35 + WR climbing = teacher was the bottleneck (keep pushing
-                              # sims); flat = capacity ceiling → then Net2Net-grow the net (local/plans/
-                              # net2net_grow.md). Fast dropped to 200 to keep compute ~flat (+8%/move).
+export SIMULATIONS=2000       # FULL/recorded search. iter-77: 800→2000 with FULL_SEARCH_PROB=1.0 → EVERY
+                              # move gets a 2000-sim recorded target (max-quality whole-game signal). The
+                              # SIMS_DIAGNOSTIC proved 2000-sim play CRUSHES 800-sim (~96%), so 800 was
+                              # halving the teacher. Clean test: if the net STILL won't promote on 2000-sim
+                              # targets everywhere, the wall is distillation/arch, not target quality.
+                              # COST: ~2.4× more self-play compute/move vs the old PCR (decided-game cut to
+                              # REDUCED_SIMULATIONS still applies, so dead positions don't burn 2000).
 export EVAL_SIMULATIONS=800   # kept at 800 so arena/Stockfish-Elo stay comparable to the 1524 anchor
 
 # KataGo-style decided-game playout: once |P(win)-P(loss)| >= threshold for N consecutive
