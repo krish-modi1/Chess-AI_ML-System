@@ -139,7 +139,7 @@ export TRAIN_LR=1.5e-4         # iter-24: LOWERED 3e-4→1.5e-4. 3e-4 OVER-optim
                               # strength dropped = Goodhart/over-optimization). AZ's final LR was 2e-4,
                               # KataGo 6e-5 — low LR for mature nets. 1.5e-4 sits between the 1e-4 that
                               # froze the policy (pre-fix) and the 3e-4 that over-cooked it.
-export KL_ANCHOR_BETA=0.75     # iter-67: 1.0→0.75. β=1.0 anchor-to-champion was a trust region too tight
+export KL_ANCHOR_BETA=0        # iter-79: 0.75→0. Anchor OFF entirely (trainer.py:498 gates on β>0 → no anchor loaded) = vanilla AlphaZero policy training, candidate free to move fully toward MCTS targets. Experiment: does removing the champion tether break the ~48% mirror? Fully reversible. iter-67: 1.0→0.75. β=1.0 anchor-to-champion was a trust region too tight
                               # to let candidates diverge enough to clear the 55% gate (10-iter promotion
                               # drought since iter-56). Loosen it so the candidate can depart the champion.
 # REFERENCE RESET (iter-22): anchor the KL reference to the LIVE champion instead of the stale 1800
@@ -179,7 +179,7 @@ export CPUCT_FACTOR=1.0        # 3) PULLED BACK 2.0→1.0 (AlphaZero baseline). 
                                #    effect on target diffuseness, and 2.0 only adds off-distribution exploration.
 export FORCED_PLAYOUT_K=0      # 4) PULLED BACK 2.0→0 (disabled). No effect on diffuseness, most-novel, and it
                                #    spreads visits (against the on-distribution thesis). See selfplay-offdistribution memory.
-export FULL_SEARCH_PROB=1.0    # 2) playout-cap: iter-67 25%→35% — search probe kept flagging a weak teacher
+export FULL_SEARCH_PROB=0.5    # iter-79: 1.0→0.5. 2000-sim-everywhere (it77-78) was a decisive negative (target quality not the wall) + ~2.4× slow; 50% of moves get the 2000-sim recorded target, rest fast (200)+unrecorded. 2) playout-cap: iter-67 25%→35% — search probe kept flagging a weak teacher
                                #    (top1-agree ~67%, KL(MCTS‖net) ~0.9, search barely improves the net). More
                                #    full+recorded moves = more/better 2000-sim targets. Rest fast+unrecorded (Dirichlet off)
 export FAST_SIMULATIONS=200     #    fast-search ("short") sim count — back to 200 to afford the 2000 full
