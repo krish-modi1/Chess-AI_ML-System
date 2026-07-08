@@ -1347,6 +1347,13 @@ def run_probes(iteration):
         for who in ("cand", "champ"):
             if who in meanv: markers[f"value_meanv_{who}"] = float(meanv[who])
             if who in dec:   markers[f"value_decisive_{who}"] = int(dec[who])
+        # champ‖cand policy divergence — THE leading promotion indicator (a candidate must diverge
+        # from the champion to win the arena; a near-mirror sits at 50%). Was stdout-only; log it so
+        # the promotion↔divergence relationship shows up in the metrics.json trend.
+        cc = re.search(r"champ\s+vs\s+cand\s*:\s*top1-agree=\s*([\d.]+)%\s+KL=([\d.]+)", out)
+        if cc:
+            markers["champ_cand_top1"] = float(cc.group(1))
+            markers["champ_cand_kl"] = float(cc.group(2))
     except Exception as e:
         print(f"  [probe] probe_all failed: {e}")
 

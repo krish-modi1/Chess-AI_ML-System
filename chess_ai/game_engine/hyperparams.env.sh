@@ -116,7 +116,12 @@ export STOCKFISH_EVERY_ITER=0    # OFF: measure champion Elo only on promotion (
 # promotions at 0.52-0.54 — a 0.55 gate rejects those cycling-equal candidates and only promotes a
 # CLEARLY-better net. With lineage-off, this HOLDS 1524 instead of bleeding it down.
 export PROMOTION_WIN_RATE=0.55
-export MAX_MOVES_PER_GAME=800
+# iter-85: SELF-PLAY cap 800→250 plies (~125 full moves). 800 let balanced games grind to 400+ full
+# moves of shuffling → mushy draw-labeled positions polluting the value target (the no-progress/decided
+# logic only cut SIMS, the game still ran to 800 and dumped junk). 250 covers the vast majority of real
+# games; the rare genuinely-long game forced-draws earlier (correct — those are drawn anyway). Data-quality
+# fix, complements the global-pooling value head. EVAL cap stays 800 for Elo-measurement comparability.
+export MAX_MOVES_PER_GAME=250
 export EVAL_MAX_MOVES_PER_GAME=800
 
 # RL training recipe — gentle fine-tune of the 1800 Lichess-pretrained net. The raw policy prior
@@ -139,7 +144,7 @@ export TRAIN_LR=1.5e-4         # iter-24: LOWERED 3e-4→1.5e-4. 3e-4 OVER-optim
                               # strength dropped = Goodhart/over-optimization). AZ's final LR was 2e-4,
                               # KataGo 6e-5 — low LR for mature nets. 1.5e-4 sits between the 1e-4 that
                               # froze the policy (pre-fix) and the 3e-4 that over-cooked it.
-export KL_ANCHOR_BETA=0.5        # iter-79: 0.75→0. Anchor OFF entirely (trainer.py:498 gates on β>0 → no anchor loaded) = vanilla AlphaZero policy training, candidate free to move fully toward MCTS targets. Experiment: does removing the champion tether break the ~48% mirror? Fully reversible. iter-67: 1.0→0.75. β=1.0 anchor-to-champion was a trust region too tight
+export KL_ANCHOR_BETA=0.5        # iter-85: β=0 (it79-84) FAILED — no trust region → candidate diverged in a LOSING direction (arena 50.7→44.7 slide) → restore β=0.5 to hold direction. (it79: tried 0.75→0.) iter-67: 1.0→0.75. β=1.0 anchor-to-champion was a trust region too tight
                               # to let candidates diverge enough to clear the 55% gate (10-iter promotion
                               # drought since iter-56). Loosen it so the candidate can depart the champion.
 # REFERENCE RESET (iter-22): anchor the KL reference to the LIVE champion instead of the stale 1800
