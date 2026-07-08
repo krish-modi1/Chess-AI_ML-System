@@ -11,7 +11,7 @@ move selection is preserved), until value accuracy recovers. Then the pipeline r
 Runs on the box (needs the self-play .npz window + a GPU). Usage from repo root:
   python3 tools/grow_value_head.py \
       --ckpt chess_ai/game_engine/model/best_model.pth \
-      --data-glob 'chess_ai/game_engine/model/iter_*' \
+      --data-glob 'chess_ai/data/self_play/iter_*' \
       --epochs 3 --max-pos 300000
 Backs up the original to <ckpt>.prevarch.bak and resets lineage (candidate/swa → .bak). Idempotent-safe:
 if the ckpt already has value_head_gp keys it just re-warms.
@@ -101,7 +101,7 @@ def backup(path, suffix=".prevarch.bak"):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", default="chess_ai/game_engine/model/best_model.pth")
-    ap.add_argument("--data-glob", default="chess_ai/game_engine/model/iter_*")
+    ap.add_argument("--data-glob", default="chess_ai/data/self_play/iter_*")  # matches main.py DATA_DIR
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--max-pos", type=int, default=300000)
     ap.add_argument("--batch", type=int, default=1024)
