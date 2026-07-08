@@ -139,7 +139,7 @@ export TRAIN_LR=1.5e-4         # iter-24: LOWERED 3e-4→1.5e-4. 3e-4 OVER-optim
                               # strength dropped = Goodhart/over-optimization). AZ's final LR was 2e-4,
                               # KataGo 6e-5 — low LR for mature nets. 1.5e-4 sits between the 1e-4 that
                               # froze the policy (pre-fix) and the 3e-4 that over-cooked it.
-export KL_ANCHOR_BETA=0        # iter-79: 0.75→0. Anchor OFF entirely (trainer.py:498 gates on β>0 → no anchor loaded) = vanilla AlphaZero policy training, candidate free to move fully toward MCTS targets. Experiment: does removing the champion tether break the ~48% mirror? Fully reversible. iter-67: 1.0→0.75. β=1.0 anchor-to-champion was a trust region too tight
+export KL_ANCHOR_BETA=0.5        # iter-79: 0.75→0. Anchor OFF entirely (trainer.py:498 gates on β>0 → no anchor loaded) = vanilla AlphaZero policy training, candidate free to move fully toward MCTS targets. Experiment: does removing the champion tether break the ~48% mirror? Fully reversible. iter-67: 1.0→0.75. β=1.0 anchor-to-champion was a trust region too tight
                               # to let candidates diverge enough to clear the 55% gate (10-iter promotion
                               # drought since iter-56). Loosen it so the candidate can depart the champion.
 # REFERENCE RESET (iter-22): anchor the KL reference to the LIVE champion instead of the stale 1800
