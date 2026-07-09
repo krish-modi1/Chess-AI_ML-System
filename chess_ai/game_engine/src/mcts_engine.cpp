@@ -363,11 +363,12 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::run_gumbel(
     for (auto& [a, c] : root->children) { acts.push_back(a); kids.push_back(c); }
     const int A = (int)acts.size();
 
-    if (A == 0) { cached_root = root; return {"", get_policy_vector(root, temperature)}; }
+    if (A == 0) { cached_root = root; last_search_value = root->value(); return {"", get_policy_vector(root, temperature)}; }
     if (A == 1) {
         std::vector<float> pol(4672, 0.0f);
         int idx = move_to_index(acts[0]); if (idx < 4672) pol[idx] = 1.0f;
         cached_root = root;
+        last_search_value = root->value();
         return {acts[0], py::array_t<float>(4672, pol.data())};
     }
 
@@ -509,6 +510,7 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::run_gumbel(
     }
 
     cached_root = root;
+    last_search_value = root->value();   // backed-up MCTS Q (STM), for the TD value target
     return {best_move, py::array_t<float>(4672, policy.data())};
 }
 
@@ -680,6 +682,7 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::search(
     }
     auto policy = get_policy_vector(root, temperature);
     cached_root = root;
+    last_search_value = root->value();   // backed-up MCTS Q (STM), for the TD value target
 
     return {best_move, policy};
 }

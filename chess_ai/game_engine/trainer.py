@@ -73,6 +73,14 @@ MAX_POSITIONS_PER_GAME = int(os.environ.get("MAX_POSITIONS_PER_GAME", 0))
 # "Policy or Value?" CoG 2019 shows the equal p+v sum is suboptimal). 1.0 = current behavior.
 VALUE_LOSS_WEIGHT = float(os.environ.get("VALUE_LOSS_WEIGHT", 1.0))
 
+# TD (z+Q) value target (Lc0-style bootstrapping): value_target = (1-λ)·onehot(z) + λ·WDL(q),
+# where z = final game outcome (hard class) and q = backed-up MCTS root Q (lower variance).
+# λ=0 → exactly the current hard-CE (backward compatible); default 0.0 = OFF. Games without a
+# baked 'qvals' member (old npz) fall back to the hard z target regardless of λ (sentinel 2.0).
+VALUE_TD_LAMBDA = float(os.environ.get("VALUE_TD_LAMBDA", 0.0))
+VALUE_TD_DRAW   = float(os.environ.get("VALUE_TD_DRAW", 0.15))  # draw mass Pd in WDL(q)
+TD_ON = (VALUE_TD_LAMBDA > 0.0)
+
 # Auxiliary-head loss weights (training-only trunk regularizers; see
 # local/plans/auxiliary-targets.md). Default 0.0 = OFF (exact legacy behavior); hyperparams.env.sh
 # sets them on. Labels are read from the .npz if baked, else derived on the fly.
@@ -250,6 +258,8 @@ class ChessDataset(Dataset):
         _p = np.empty((total, 4672),       dtype=np.float16)
         _v = np.empty(total,               dtype=np.int64)
         _g = np.empty(total,               dtype=np.int32)   # per-position game id (= file)
+        # Backed-up MCTS Q per position for the TD target; sentinel 2.0 = "no q" (old npz → hard z).
+        _q = np.full(total, 2.0, dtype=np.float32) if TD_ON else None
         # Auxiliary-target arrays (tiny vs _s); only filled when AUX_ON.
         _mat = np.zeros(total, dtype=np.float32) if AUX_ON else None
         _pl  = np.zeros(total, dtype=np.float32) if AUX_ON else None
@@ -272,6 +282,8 @@ class ChessDataset(Dataset):
                     has_aux = AUX_ON and all(k in d for k in ('material', 'plies_left', 'reply'))
                     if has_aux:                       # baked labels, aligned to s/p/v
                         a_mat = d['material'][:take]; a_pl = d['plies_left'][:take]; a_rp = d['reply'][:take]
+                    has_q = TD_ON and 'qvals' in d    # backed-up MCTS Q, aligned to s/p/v
+                    a_q = d['qvals'][:take] if has_q else None
                 # Loud guard: a temperature=0 overflow once silently filled policy
                 # targets with NaN, and the trainer's nan_to_num masked it. Fail fast
                 # and visibly here instead of training on corrupt targets again.
@@ -292,11 +304,15 @@ class ChessDataset(Dataset):
                     s, p, v = s[keep], p[keep], v[keep]
                     if AUX_ON:
                         a_mat, a_pl, a_rp = a_mat[keep], a_pl[keep], a_rp[keep]
+                    if has_q:
+                        a_q = a_q[keep]
                     take = len(v)
                 _s[pos:pos + take] = s
                 _p[pos:pos + take] = p
                 _v[pos:pos + take] = v.astype(np.int64)
                 _g[pos:pos + take] = game_id   # all positions in one file = one game
+                if TD_ON and has_q:
+                    _q[pos:pos + take] = a_q   # else leaves the 2.0 sentinel → hard z for this file
                 if AUX_ON:
                     _mat[pos:pos + take] = a_mat
                     _pl[pos:pos + take]  = a_pl
@@ -321,6 +337,8 @@ class ChessDataset(Dataset):
         self._policies = torch.from_numpy(_p)
         self._values   = torch.from_numpy(_v)
         self._game_ids = _g            # numpy int32, one per position
+        if TD_ON:
+            self._qvals = torch.from_numpy(_q[:pos])
         if AUX_ON:
             self._material = torch.from_numpy(_mat[:pos])
             self._plies    = torch.from_numpy(_pl[:pos])
@@ -344,6 +362,8 @@ class ChessDataset(Dataset):
         state  = self._states[idx]
         policy = self._policies[idx]
         value  = self._values[idx]
+        if TD_ON:
+            qval = self._qvals[idx]   # STM-relative, flip-invariant (sentinel 2.0 = no q)
         if AUX_ON:
             material = self._material[idx]
             plies    = self._plies[idx]
@@ -369,6 +389,8 @@ class ChessDataset(Dataset):
             'policy': policy.float(),
             'value':  value,
         }
+        if TD_ON:
+            out['qval'] = qval
         if AUX_ON:
             out['material'] = material
             out['plies']    = plies
@@ -576,7 +598,26 @@ def train_model(data_path="data/self_play",
     
     # 3. Loss Functions
     ce_value_loss = nn.CrossEntropyLoss()
-    
+
+    def value_loss_fn(pred_logits, target_class, qval=None):
+        """WDL value loss. λ=0 (TD off) → plain hard cross-entropy (exact legacy behavior).
+        TD on → soft target (1-λ)·onehot(z) + λ·WDL(q), per position; rows whose q is the 2.0
+        sentinel (old npz / forced move) fall back to λ=0 so they keep the pure z target."""
+        if not TD_ON or qval is None:
+            return ce_value_loss(pred_logits, target_class)
+        # onehot(z) from the hard class {0=win,1=draw,2=loss}
+        z = torch.nn.functional.one_hot(target_class, num_classes=3).float()
+        # WDL(q): Pw/Pl split (1-Pd) by the sign/magnitude of q; Pd is fixed draw mass.
+        Pd = VALUE_TD_DRAW
+        q  = qval.clamp(-1.0, 1.0)
+        Pw = (1.0 - Pd) * (1.0 + q) * 0.5
+        Pl = (1.0 - Pd) * (1.0 - q) * 0.5
+        wdl = torch.stack([Pw, torch.full_like(Pw, Pd), Pl], dim=1)
+        lam = torch.where(qval.abs() <= 1.0, VALUE_TD_LAMBDA, 0.0).unsqueeze(1)  # sentinel 2.0 → λ=0
+        soft = (1.0 - lam) * z + lam * wdl
+        logp = torch.log_softmax(pred_logits, dim=1)
+        return -(soft * logp).sum(dim=1).mean()
+
     # --- AMP Scaler ---
     scaler = torch.amp.GradScaler(device.type, enabled=(device.type == 'cuda'))
 
@@ -656,6 +697,7 @@ def train_model(data_path="data/self_play",
             states          = batch['state'].to(device, non_blocking=True)
             target_policies = batch['policy'].to(device, non_blocking=True)
             target_values   = batch['value'].to(device, non_blocking=True)
+            target_qvals    = batch['qval'].to(device, non_blocking=True) if TD_ON else None
 
             optimizer.zero_grad(set_to_none=True)
 
@@ -685,7 +727,7 @@ def train_model(data_path="data/self_play",
                     pred_policies, pred_values, pred_mat, pred_plies, pred_reply = model(states, with_aux=True)
                 else:
                     pred_policies, pred_values = model(states)
-                v_loss = ce_value_loss(pred_values, target_values)
+                v_loss = value_loss_fn(pred_values, target_values, target_qvals)
 
             # Policy loss in fp32: pred_policies may be fp16 inside autocast and
             # fp16 softmax can overflow to NaN (not just -inf). clamp handles -inf→-100
@@ -764,12 +806,13 @@ def train_model(data_path="data/self_play",
                 states          = batch['state'].to(device, non_blocking=True)
                 target_policies = batch['policy'].to(device, non_blocking=True)
                 target_values   = batch['value'].to(device, non_blocking=True)
+                target_qvals    = batch['qval'].to(device, non_blocking=True) if TD_ON else None
 
                 # Validation in fp32 (NO autocast): val has no GradScaler, so an fp16 logit
                 # overflow during early-training instability would surface as a NaN val loss
                 # (seen at epoch 2). fp32 val is cheap (no backward) and overflow-proof.
                 pred_policies, pred_values = model(states)
-                v_loss = ce_value_loss(pred_values, target_values)
+                v_loss = value_loss_fn(pred_values, target_values, target_qvals)
 
                 log_probs = torch.log_softmax(pred_policies.float(), dim=1).clamp(min=-100.0)
                 p_loss = -(target_policies.nan_to_num(0.0) * log_probs).sum(dim=1).mean()

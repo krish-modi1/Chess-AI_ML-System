@@ -51,5 +51,6 @@ PYBIND11_MODULE(mcts_engine_cpp, m)
         .def("reset_cache", &MCTSEngine::reset_cache)
 
         .def_readwrite("simulations", &MCTSEngine::simulations)
-        .def_readwrite("batch_size", &MCTSEngine::batch_size);
+        .def_readwrite("batch_size", &MCTSEngine::batch_size)
+        .def_readonly("last_search_value", &MCTSEngine::last_search_value);
 }

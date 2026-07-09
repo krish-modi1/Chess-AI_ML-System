@@ -160,6 +160,14 @@ export MAX_POSITIONS_PER_GAME=20   # cap EVERY game to 20 positions (value-targe
                                    # caps ≤5 over-confident (shared trunk ≠ AlphaGo's separate value net).
 export VALUE_LOSS_WEIGHT=1.0       # no-op: A/B showed value-loss weight has zero effect (flattening is trunk/BN-driven)
 
+# TD (z+Q) value target (Lc0-style bootstrapping). value_target = (1-λ)·onehot(z) + λ·WDL(q),
+# z = final game outcome (high variance), q = backed-up MCTS root Q baked per-position in the .npz
+# (much lower variance). λ=0 → EXACTLY the current hard-CE (no-op). iter-87: ON at 0.3 to cut the
+# MC-outcome noise that we now believe is the real value-flatness driver (the head fix alone didn't
+# move value_decisive). Old npz w/o baked q auto-fall-back to hard z. Pd = fixed draw mass in WDL(q).
+export VALUE_TD_LAMBDA=0.3
+export VALUE_TD_DRAW=0.15
+
 # Auxiliary-head trunk regularizers (KataGo-style) to sharpen the signal-starved value head.
 # Forward-looking targets baked into the .npz: material=final material margin (MSE), plies=plies-
 # to-end (MSE), reply=opponent's next move (CE over 4672). Weights are scale-balanced: reply CE
@@ -171,7 +179,10 @@ export AUX_W_MAT=1.0       # 0.5→1.0: the value head trains SLOWLY (sparse out
                           # margin is the most value-correlated aux target, so weight it harder to
                           # regularize the trunk toward value structure → faster value-head learning.
                           # (raw ~0.4 × 1.0 ≈ 10% of p_loss — into the 10-20% target band.)
-export AUX_W_PLIES=0      # DROPPED — plies head wasn't learning (flat ~0.14), just trunk-gradient noise.
+export AUX_W_PLIES=0.5    # iter-87: RE-ACTIVATED (0→0.5). Was dropped when the value path was the crippled
+                          # 1-ch head; with the global-pooling value head + TD value target the trunk signal
+                          # is richer, so retest moves-left (targets our long-game weakness). Lc0 keeps it ≪1
+                          # → 0.5 (raw ~0.13 × 0.5 ≈ 0.065, modest). Lower if it dominates or destabilizes.
 export AUX_W_REPLY=0.03
 
 # ── Search/training upgrades (master-table easy wins) — see local/plans/upgrades-1-6.md ──

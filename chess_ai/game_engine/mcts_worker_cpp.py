@@ -118,6 +118,8 @@ class MCTSWorker:
         # search(). Sim-independent (computed from the single root inference), so it stays a
         # reliable "is this position decided?" signal even when simulations are reduced.
         self.last_root_value = 0.0
+        # Post-search backed-up root Q (STM-relative), refreshed each search() — the TD target.
+        self.last_search_value = 0.0
 
         # History for current game — list of ChessBoard copies, most recent first.
         # Set by search() on each call; consumed by _batch_inference_callback.
@@ -317,6 +319,8 @@ class MCTSWorker:
             self._batch_inference_callback,
             use_dirichlet,
         )
+        # Post-search backed-up root Q (STM-relative, [-1,1]) — the TD (z+Q) value target.
+        self.last_search_value = float(self.mcts_engine.last_search_value)
 
         return best_move, policy_vector
 

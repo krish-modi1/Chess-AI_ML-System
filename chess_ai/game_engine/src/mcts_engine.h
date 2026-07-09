@@ -124,6 +124,9 @@ public:
     std::mt19937 rng;
     std::shared_ptr<MCTSNode> cached_root;
     uint64_t search_calls = 0;   // bumped each search() so the per-call reseed varies per move/game
+    // Post-search backed-up ROOT value (STM-relative, [-1,1]) — the MCTS Q averaged over all sims,
+    // a much lower-variance value estimate than the raw net. Read by self-play for the TD (z+Q) target.
+    float last_search_value = 0.0f;
 
     MCTSEngine(int sims = 800, int bs = 8) : simulations(sims), batch_size(bs) {}
 

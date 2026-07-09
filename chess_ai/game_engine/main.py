@@ -308,6 +308,7 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                         "state": state_tensor,
                         "policy": mcts_policy,
                         "turn": current_turn,
+                        "q": worker.last_search_value,   # STM-relative backed-up MCTS Q, for TD target
                     })
 
             while not game.is_over:
@@ -404,9 +405,10 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                         "state": state_tensor,
                         "policy": mcts_policy,
                         "turn": current_turn,
+                        "q": worker.last_search_value,   # STM-relative backed-up MCTS Q, for TD target
                     })
 
-                
+
                 dur = time.time() - move_start
                 # Use the engine's CURRENT sim count, not the module constant — KataGo
                 # decided-game reduction may have lowered it, so SIMULATIONS would over-report.
@@ -450,6 +452,8 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
         states_arr   = np.array([g["state"] for g in game_data])
         policies_arr = np.array([g["policy"] for g in game_data])
         values_arr   = np.array(values, dtype=np.int8)
+        # Backed-up MCTS Q per position (STM-relative, [-1,1]) — the TD (z+Q) value target.
+        qvals_arr    = np.array([g.get("q", 0.0) for g in game_data], dtype=np.float32)
         # Bake auxiliary trunk-regularizer labels so the trainer reads them directly (matches
         # migrate_aux.py for old games). See local/plans/auxiliary-targets.md.
         material, plies_left, reply = derive_aux_labels(states_arr, policies_arr, values_arr)
@@ -457,6 +461,7 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                           states=states_arr,
                           policies=policies_arr,
                           values=values_arr,
+                          qvals=qvals_arr,
                           material=material,
                           plies_left=plies_left,
                           reply=reply)
