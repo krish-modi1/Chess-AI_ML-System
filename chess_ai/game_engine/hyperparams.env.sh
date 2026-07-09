@@ -112,10 +112,19 @@ export STOCKFISH_ELO=1320
 export STOCKFISH_EVERY_ITER=0    # OFF: measure champion Elo only on promotion (saves Stockfish compute
                                 # — budget). With lineage-off the champion is HELD; arena WR is the per-iter signal.
 
-# Gate RAISED back to 0.55 to PROTECT the iter-3 (1524) champion. iters 13-15 degraded 1524→1222 via
-# promotions at 0.52-0.54 — a 0.55 gate rejects those cycling-equal candidates and only promotes a
-# CLEARLY-better net. With lineage-off, this HOLDS 1524 instead of bleeding it down.
-export PROMOTION_WIN_RATE=0.55
+# HISTORY: gate was RAISED to 0.55 to protect the iter-3 (1524-scale) champion — iters 13-15 degraded
+# 1524→1222 via promotions at 0.52-0.54. BUT that was the transport-corruption era (arena = coin flip,
+# champion walked down on RANDOM promotions — see transport-corruption-bug memory), AND lineage-off.
+# Session 12 (iter-89): the transport bug is fixed, evals are clean. Root cause of the 32-iter promotion
+# drought (last promote it56) is a FROZEN self-play generator: self-play runs off best_model, which is
+# frozen because nothing clears 0.55. Candidates crest 0.502-0.520 (never 0.52) = a coin-flip MIRROR of
+# the champion, i.e. a training fixed point (lineage on frozen-champion data + KL-anchored to champion).
+# LOWERED to 0.50 (KataGo's 100/200 gate; Leela sim: 0.50 > 0.55 on Elo/hr) to UNFREEZE the generator:
+# promoting a near-parity net moves best_model → next self-play draws from a moving distribution, which
+# is where improvement actually compounds. GUARDRAIL: champion Elo will random-walk, not monotonically
+# climb — judge over ~10 iters against the Stockfish anchor, not any single arena number. If it walks
+# DOWN, the bottleneck is value/policy learning (TD/Gumbel), not the gate → revert to 0.55.
+export PROMOTION_WIN_RATE=0.50
 # iter-85: SELF-PLAY cap 800→250 plies (~125 full moves). 800 let balanced games grind to 400+ full
 # moves of shuffling → mushy draw-labeled positions polluting the value target (the no-progress/decided
 # logic only cut SIMS, the game still ran to 800 and dumped junk). 250 covers the vast majority of real

@@ -37,7 +37,23 @@ from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 HERE = os.path.dirname(os.path.abspath(__file__))
 METRICS_FILE = os.path.join(HERE, "game_engine", "model", "metrics.json")
 OUTPUT_DIR = os.path.join(HERE, "game_engine", "evaluation", "plots")
-PROMOTION_GATE = 0.55
+# Promotion gate is ERA-AWARE: metrics.json has no per-iter "promoted" field, so the plot infers a
+# promotion from win_rate >= gate. The gate changed 0.55 → 0.50 at iter 89 (Session 12 — unfreeze the
+# frozen self-play generator; KataGo's 100/200 gate). Using a single constant would retroactively mark
+# old 0.50-0.55 rejections as promotions (dishonest). GATE_HISTORY = (first_iter, gate), ascending.
+# Adjust the 89 boundary if the box picked up the new config at a different iteration.
+GATE_HISTORY = [(0, 0.55), (89, 0.50)]
+
+
+def gate_for(iteration):
+    g = GATE_HISTORY[0][1]
+    for start, val in GATE_HISTORY:
+        if iteration >= start:
+            g = val
+    return g
+
+
+PROMOTION_GATE = GATE_HISTORY[-1][1]  # latest gate — for reference lines on scatter panels
 DPI = 150
 # Supervised-pretrained base = iteration 0. Trained on Lichess human games (~1800),
 # measured ~1500 Elo vs Stockfish-1800 before any self-play. Loss values are read
@@ -86,8 +102,13 @@ INTERVENTIONS = [
     # Reference reset: KL anchor pretrained-1800 → live champion. Set "iter" to the FIRST iteration
     # whose training log shows "KL anchor = CHAMPION" (adjust if it ships at a different iter than 22).
     {"iter": 22, "label": "anchor→champion", "panels": {"kl", "elo", "winrate", "loss"}},
-    # When the KL-anchor β is changed, add e.g.:
-    # {"iter": <N>, "label": "KL β 1.0→0.5", "panels": {"kl", "elo", "loss"}},
+    # Value-head architecture fix: 1-ch bottleneck → KataGo global avg+max pool WDL head (migrated via
+    # grow_value_head.py). Negative result — value stayed flat. Mark the value/loss panels.
+    {"iter": 85, "label": "value-head GP", "panels": {"value", "loss", "elo"}},
+    # TD (z+Q) value target λ=0.3 + moves-left aux head go live. Phases in over ~window_size iters.
+    {"iter": 87, "label": "TD λ=0.3 + aux", "panels": {"value", "loss"}},
+    # Promotion gate 0.55 → 0.50 (unfreeze the self-play generator). Keep in sync with GATE_HISTORY.
+    {"iter": 89, "label": "gate 0.55→0.50", "panels": {"winrate", "elo"}},
 ]
 
 
@@ -144,7 +165,7 @@ def col(history, key, zero_is_missing=False):
 
 def parse(history):
     it = np.array([h["iteration"] for h in history])
-    promoted = np.array([h.get("arena_win_rate", 0.0) >= PROMOTION_GATE for h in history])
+    promoted = np.array([h.get("arena_win_rate", 0.0) >= gate_for(h["iteration"]) for h in history])
     return {
         "it": it,
         "promoted": promoted,
@@ -310,8 +331,12 @@ def panel_winrate(ax, H):
     colors = [C["value"] if p else C["reject"] for p in H["promoted"][m]]
     ax.plot(it[m], wr[m], color=C["winrate"], lw=2.0, zorder=1)
     ax.scatter(it[m], wr[m], c=colors, s=55, zorder=2, edgecolor="white", linewidth=1)
-    ax.axhline(PROMOTION_GATE, color=C["reject"], ls="--", lw=1.6,
-               label=f"Promotion gate ({PROMOTION_GATE:.2f})")
+    # Era-aware promotion gate: a stepped line (0.55 → 0.50 at the change) so the reference matches the
+    # gate that actually applied at each iteration, not a single flat value.
+    gate_lbl = ("Promotion gate" if len(GATE_HISTORY) == 1
+                else "Promotion gate (" + "→".join(f"{g:.2f}" for _, g in GATE_HISTORY) + ")")
+    ax.plot(it[m], np.array([gate_for(int(i)) for i in it[m]]), color=C["reject"], ls="--", lw=1.6,
+            drawstyle="steps-post", label=gate_lbl)
     ax.set_ylim(0, 1)
     ax.set_title("Arena Win Rate (candidate vs champion)")
     ax.set_ylabel("Win rate")
@@ -390,7 +415,9 @@ def panel_reward_kl(ax, H):
     for i in np.where(m)[0]:
         ax.annotate(str(H["it"][i]), (x[i], y[i]), textcoords="offset points",
                     xytext=(6, 4), fontsize=7, color="#475569")
-    ax.axhline(PROMOTION_GATE, color=C["reject"], ls="--", lw=1.4, alpha=0.7)
+    # Points span both gate eras — draw a faint reference line for each distinct gate that applied.
+    for j, g in enumerate(sorted({v for _, v in GATE_HISTORY})):
+        ax.axhline(g, color=C["reject"], ls="--", lw=1.4, alpha=0.7 if j == 0 else 0.35)
     ax.set_title("Reward–KL Frontier")
     ax.set_xlabel("KL to reference (nats)")
     ax.set_ylabel("Arena win rate")
