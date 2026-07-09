@@ -184,6 +184,18 @@ export CPUCT_FACTOR=1.0        # 3) PULLED BACK 2.0→1.0 (AlphaZero baseline). 
                                #    effect on target diffuseness, and 2.0 only adds off-distribution exploration.
 export FORCED_PLAYOUT_K=0      # 4) PULLED BACK 2.0→0 (disabled). No effect on diffuseness, most-novel, and it
                                #    spreads visits (against the on-distribution thesis). See selfplay-offdistribution memory.
+
+# Gumbel AlphaZero self-play search (Tier-2 C++, local/plans/gumbel-search.md). DEFAULT OFF = current
+# PUCT behavior (a rebuilt .so is a no-op). Only engages for RECORDED self-play moves (use_dirichlet=True);
+# eval/arena/Stockfish stay pure PUCT. To run the A/B (Gumbel@300 vs current PUCT@2000): flip
+# GUMBEL_ENABLE=1, set SIMULATIONS=300, and FULL_SEARCH_PROB=1.0 (every recorded move = a full Gumbel
+# search). Do NOT run concurrently with the value-head read — attribution. Batching is option-A (~2× vs
+# current; option-B in the plan → ~6×). Validate strength in a short arena A/B before investing further.
+export GUMBEL_ENABLE=0         # 1 = Gumbel self-play (Gumbel-top-k + sequential halving + improved-policy target)
+export GUMBEL_M=16             # sampled root actions (Gumbel-top-k candidate set)
+export GUMBEL_C_VISIT=50       # σ(q)=(c_visit+maxN)·c_scale·q — completed-Q weighting (Danihelka defaults)
+export GUMBEL_C_SCALE=1.0
+export GUMBEL_INTERIOR=0       # 1 = full Gumbel (deterministic non-root rule); 0 = root-only (PUCT interior)
 export FULL_SEARCH_PROB=0.5    # iter-79: 1.0→0.5. 2000-sim-everywhere (it77-78) was a decisive negative (target quality not the wall) + ~2.4× slow; 50% of moves get the 2000-sim recorded target, rest fast (200)+unrecorded. 2) playout-cap: iter-67 25%→35% — search probe kept flagging a weak teacher
                                #    (top1-agree ~67%, KL(MCTS‖net) ~0.9, search barely improves the net). More
                                #    full+recorded moves = more/better 2000-sim targets. Rest fast+unrecorded (Dirichlet off)

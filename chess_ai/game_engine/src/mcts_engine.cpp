@@ -11,9 +11,20 @@ static float env_float(const char* name, float def) {
     const char* v = std::getenv(name);
     return v ? (float)std::atof(v) : def;
 }
+static int env_int(const char* name, int def) {
+    const char* v = std::getenv(name);
+    return v ? std::atoi(v) : def;
+}
 static const float FPU_REDUCTION    = env_float("FPU_REDUCTION", 0.0f);     // 0 = off (unvisited Q=0)
 static const float CPUCT_FACTOR     = env_float("CPUCT_FACTOR", 1.0f);      // 1 = current log term
 static const float FORCED_PLAYOUT_K = env_float("FORCED_PLAYOUT_K", 0.0f);  // 0 = off (KataGo k=2)
+
+// Gumbel AlphaZero (self-play only, gated on use_dirichlet). Default OFF → rebuilt .so is a no-op.
+static const int   GUMBEL_ENABLE   = env_int("GUMBEL_ENABLE", 0);      // 1 = use Gumbel self-play search
+static const int   GUMBEL_M        = env_int("GUMBEL_M", 16);          // sampled root actions (Gumbel-top-k)
+static const float GUMBEL_C_VISIT  = env_float("GUMBEL_C_VISIT", 50.0f); // σ(q)=(c_visit+maxN)·c_scale·q
+static const float GUMBEL_C_SCALE  = env_float("GUMBEL_C_SCALE", 1.0f);
+static const int   GUMBEL_INTERIOR = env_int("GUMBEL_INTERIOR", 0);    // 1 = deterministic non-root rule (full)
 
 // === select_child() — FPU + cpuct factor + forced playouts (all env-gated) ===
 std::pair<std::string, std::shared_ptr<MCTSNode>> MCTSNode::select_child(bool self_play) {
@@ -292,6 +303,215 @@ void MCTSEngine::reset_cache() {
     }
 }
 
+// === gumbel_interior_select() — full-Gumbel non-root rule (GUMBEL_INTERIOR=1) ===
+// Pick the child maximizing [ π'(a) − N(a)/(1+ΣN) ], where π' is the node-local improved policy
+// softmax(logit + σ(completedQ)). Drives interior visits toward the improved policy (better Q
+// estimates at low sims than PUCT's noisy exploration term). node value stands in for v_π in v_mix.
+std::shared_ptr<MCTSNode> MCTSEngine::gumbel_interior_select(const std::shared_ptr<MCTSNode>& node) {
+    const size_t A = node->children.size();
+    std::vector<std::shared_ptr<MCTSNode>> kids; kids.reserve(A);
+    std::vector<float> logit(A), q(A);
+    std::vector<int> N(A);
+    float sumN = 0.0f, wq = 0.0f, wp = 0.0f, maxN = 0.0f;
+    size_t i = 0;
+    for (auto& [a, c] : node->children) {
+        kids.push_back(c);
+        logit[i] = std::log(std::max(c->prior, 1e-12f));
+        q[i]     = -c->value();                 // node-STM Q of the child
+        N[i]     = c->visit_count;
+        sumN += (float)N[i];
+        maxN = std::max(maxN, (float)N[i]);
+        if (N[i] > 0) { wp += c->prior; wq += c->prior * q[i]; }
+        i++;
+    }
+    float v_node = node->value();
+    float v_mix = (sumN > 0.0f && wp > 1e-12f) ? (v_node + sumN * (wq / wp)) / (1.0f + sumN) : v_node;
+    float scale = (GUMBEL_C_VISIT + maxN) * GUMBEL_C_SCALE;
+
+    // improved policy π' = softmax(logit + σ(completedQ))
+    std::vector<float> pi(A);
+    float mx = -1e30f;
+    for (size_t j = 0; j < A; j++) {
+        float cq = (N[j] > 0) ? q[j] : v_mix;
+        pi[j] = logit[j] + scale * cq;
+        mx = std::max(mx, pi[j]);
+    }
+    float Z = 0.0f;
+    for (size_t j = 0; j < A; j++) { pi[j] = std::exp(pi[j] - mx); Z += pi[j]; }
+    if (Z > 0.0f) for (auto& p : pi) p /= Z;
+
+    // argmax_a [ π'(a) − N(a)/(1+ΣN) ]
+    float denom = 1.0f + sumN;
+    size_t best = 0; float best_score = -1e30f;
+    for (size_t j = 0; j < A; j++) {
+        float score = pi[j] - (float)N[j] / denom;
+        if (j == 0 || score > best_score) { best_score = score; best = j; }
+    }
+    return kids[best];
+}
+
+// === run_gumbel() — Gumbel-top-k + sequential halving at the root; improved-policy target ===
+std::pair<std::string, py::array_t<float>> MCTSEngine::run_gumbel(
+    std::shared_ptr<MCTSNode>& root, float root_value, float temperature,
+    py::function& inference_callback) {
+
+    // Index the root children.
+    std::vector<std::string> acts;
+    std::vector<std::shared_ptr<MCTSNode>> kids;
+    acts.reserve(root->children.size());
+    kids.reserve(root->children.size());
+    for (auto& [a, c] : root->children) { acts.push_back(a); kids.push_back(c); }
+    const int A = (int)acts.size();
+
+    if (A == 0) { cached_root = root; return {"", get_policy_vector(root, temperature)}; }
+    if (A == 1) {
+        std::vector<float> pol(4672, 0.0f);
+        int idx = move_to_index(acts[0]); if (idx < 4672) pol[idx] = 1.0f;
+        cached_root = root;
+        return {acts[0], py::array_t<float>(4672, pol.data())};
+    }
+
+    // logits = log(prior) (recovers NN logits up to a constant, which cancels in top-k & softmax).
+    // Gumbel noise g(a); zeroed when temperature≈0 so late-game self-play exploits deterministically
+    // (mirrors the AlphaZero temperature schedule — early explore, late greedy).
+    const bool explore = (temperature >= 1e-6f);
+    std::vector<float> logit(A), g(A);
+    std::uniform_real_distribution<float> U(1e-12f, 1.0f);
+    for (int i = 0; i < A; i++) {
+        logit[i] = std::log(std::max(kids[i]->prior, 1e-12f));
+        g[i] = explore ? -std::log(-std::log(U(rng))) : 0.0f;
+    }
+
+    // Gumbel-top-k: the m best actions by g+logit become the sequential-halving candidates.
+    const int m = std::min(GUMBEL_M, A);
+    std::vector<int> order(A);
+    std::iota(order.begin(), order.end(), 0);
+    std::partial_sort(order.begin(), order.begin() + m, order.end(),
+        [&](int x, int y) { return g[x] + logit[x] > g[y] + logit[y]; });
+    std::vector<int> live(order.begin(), order.begin() + m);
+
+    const int n = std::max(1, simulations);
+    const int num_phases = std::max(1, (int)std::ceil(std::log2((double)m)));
+
+    auto q_hat     = [&](int i) -> float { return -kids[i]->value(); };   // root-STM Q of action i
+    auto max_visit = [&]() -> float { float mx = 0.0f; for (auto& c : kids) mx = std::max(mx, (float)c->visit_count); return mx; };
+
+    // One descent from a given root child → leaf (PUCT interior, or Gumbel-interior if enabled).
+    auto descend = [&](int child_idx) -> std::vector<std::shared_ptr<MCTSNode>> {
+        std::vector<std::shared_ptr<MCTSNode>> path;
+        path.reserve(64);
+        path.push_back(root);
+        auto node = kids[child_idx];
+        path.push_back(node);
+        while (node->is_expanded()) {
+            std::shared_ptr<MCTSNode> nxt = GUMBEL_INTERIOR
+                ? gumbel_interior_select(node)
+                : node->select_child(false).second;   // PUCT, no forced playouts
+            path.push_back(nxt);
+            node = nxt;
+        }
+        return path;
+    };
+
+    // Sequential halving: each phase gives every live candidate `per` visits, then keep the top half
+    // ranked by g+logit+σ(q̂). Descents are batched at most ONE per candidate per batch (so a candidate
+    // is never scheduled twice against its own still-unexpanded child → no duplicate leaf).
+    while ((int)live.size() > 1) {
+        const int k = (int)live.size();
+        const int per = std::max(1, n / (num_phases * k));
+        std::vector<int> need(k, per);
+        int total_need = per * k;
+
+        while (total_need > 0) {
+            std::vector<std::shared_ptr<MCTSNode>> leaves;
+            std::vector<std::vector<std::shared_ptr<MCTSNode>>> paths;
+            std::vector<py::object> leaf_states;
+            int scheduled = 0;
+
+            for (int t = 0; t < k && scheduled < batch_size; t++) {
+                if (need[t] <= 0) continue;
+                need[t]--; total_need--; scheduled++;
+
+                auto path = descend(live[t]);
+                for (auto& nd : path) { nd->virtual_loss += VIRTUAL_LOSS; nd->value_sum -= VIRTUAL_LOSS; }
+                auto leaf = path.back();
+                if (leaf->board.is_over()) {
+                    float tp = leaf->board.turn_player();
+                    backpropagate(path, leaf->board.get_reward_for_turn(tp), tp);
+                } else {
+                    leaves.push_back(leaf);
+                    paths.push_back(std::move(path));
+                    leaf_states.push_back(py::cast(leaf->board));
+                }
+            }
+
+            if (leaves.empty()) continue;
+
+            py::list py_leaf_states;
+            for (auto& s : leaf_states) py_leaf_states.append(s);
+            py::object result = inference_callback(py_leaf_states);
+            py::array_t<float> policies_array = result.attr("__getitem__")(0).cast<py::array_t<float>>();
+            py::array_t<float> values_array   = result.attr("__getitem__")(1).cast<py::array_t<float>>();
+            float* policies_ptr = (float*)policies_array.request().ptr;
+            float* values_ptr   = (float*)values_array.request().ptr;
+
+            for (size_t i = 0; i < leaves.size(); i++) {
+                auto node = leaves[i];
+                const auto& next_legal = node->board.legal_moves();
+                std::vector<float> leaf_policy(4672);
+                for (int j = 0; j < 4672; j++) leaf_policy[j] = policies_ptr[i * 4672 + j];
+                node->expand(next_legal, leaf_policy);
+                float tp = node->board.turn_player();
+                backpropagate(paths[i], values_ptr[i], tp);
+            }
+        }
+
+        // Rank live candidates and keep the top half.
+        const float mv = max_visit();
+        std::sort(live.begin(), live.end(), [&](int x, int y) {
+            float sx = g[x] + logit[x] + (GUMBEL_C_VISIT + mv) * GUMBEL_C_SCALE * q_hat(x);
+            float sy = g[y] + logit[y] + (GUMBEL_C_VISIT + mv) * GUMBEL_C_SCALE * q_hat(y);
+            return sx > sy;
+        });
+        live.resize(std::max(1, k / 2));
+    }
+
+    const std::string best_move = acts[live[0]];
+
+    // Improved-policy TARGET over ALL root actions: π′ = softmax(logit + σ(completedQ)),
+    // completedQ = q̂ for visited actions, v_mix for unvisited. A valid policy improvement at any n.
+    float sumN = 0.0f, wq = 0.0f, wp = 0.0f;
+    for (int i = 0; i < A; i++) {
+        int N = kids[i]->visit_count;
+        sumN += (float)N;
+        if (N > 0) { wp += kids[i]->prior; wq += kids[i]->prior * q_hat(i); }
+    }
+    const float v_mix = (sumN > 0.0f && wp > 1e-12f) ? (root_value + sumN * (wq / wp)) / (1.0f + sumN) : root_value;
+    const float mv = max_visit();
+    const float scale = (GUMBEL_C_VISIT + mv) * GUMBEL_C_SCALE;
+
+    std::vector<float> improved(A);
+    float mx = -1e30f;
+    for (int i = 0; i < A; i++) {
+        float cq = (kids[i]->visit_count > 0) ? q_hat(i) : v_mix;
+        improved[i] = logit[i] + scale * cq;
+        mx = std::max(mx, improved[i]);
+    }
+    float Z = 0.0f;
+    for (int i = 0; i < A; i++) { improved[i] = std::exp(improved[i] - mx); Z += improved[i]; }
+
+    std::vector<float> policy(4672, 0.0f);
+    if (Z > 0.0f) {
+        for (int i = 0; i < A; i++) {
+            int idx = move_to_index(acts[i]);
+            if (idx < 4672) policy[idx] = improved[i] / Z;
+        }
+    }
+
+    cached_root = root;
+    return {best_move, py::array_t<float>(4672, policy.data())};
+}
+
 // === search() — root_state is ChessBoard; all tree ops are pure C++ ===
 std::pair<std::string, py::array_t<float>> MCTSEngine::search(
     ChessBoard root_state,
@@ -319,6 +539,12 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::search(
 
         const auto& legal_moves = root->board.legal_moves();   // pure C++
         root->expand(legal_moves, policy_vec);
+    }
+
+    // Gumbel self-play path (env-gated, self-play only). Gumbel noise replaces Dirichlet + epsilon,
+    // so we branch BEFORE add_dirichlet_noise. Eval/arena (use_dirichlet=false) never enters here.
+    if (GUMBEL_ENABLE && use_dirichlet) {
+        return run_gumbel(root, initial_value, temperature, inference_callback);
     }
 
     if (use_dirichlet) add_dirichlet_noise(root);

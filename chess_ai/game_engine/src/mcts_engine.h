@@ -150,4 +150,13 @@ private:
 
     void add_dirichlet_noise(std::shared_ptr<MCTSNode>& root);
     void clear_tree(std::shared_ptr<MCTSNode>& root);
+
+    // Gumbel AlphaZero self-play search (Danihelka 2022): Gumbel-top-k + sequential halving at the
+    // root, improved-policy target. Interior selection is PUCT (root-only) or the deterministic
+    // improved-policy rule (full Gumbel, env GUMBEL_INTERIOR). Env-gated; PUCT path is untouched.
+    std::pair<std::string, py::array_t<float>> run_gumbel(
+        std::shared_ptr<MCTSNode>& root, float root_value, float temperature,
+        py::function& inference_callback);
+    // Full-Gumbel interior action selection: argmax_a [ π'(a) − N(a)/(1+ΣN) ], π' from completed-Q.
+    std::shared_ptr<MCTSNode> gumbel_interior_select(const std::shared_ptr<MCTSNode>& node);
 };

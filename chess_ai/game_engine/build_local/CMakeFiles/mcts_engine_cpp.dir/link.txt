@@ -1,0 +1,1 @@
+/usr/bin/c++ -fPIC -O3 -march=native -static-libstdc++ -static-libgcc -flto=auto -shared  -o mcts_engine_cpp.cpython-312-x86_64-linux-gnu.so CMakeFiles/mcts_engine_cpp.dir/src/chess_board.cpp.o CMakeFiles/mcts_engine_cpp.dir/src/mcts_engine.cpp.o CMakeFiles/mcts_engine_cpp.dir/src/python_bridge.cpp.o 
