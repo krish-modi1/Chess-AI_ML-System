@@ -112,10 +112,10 @@ export TRAIN_FROM_LINEAGE=1
 
 # Arena: 50 workers × 4 games = 200 games (tighter promotion gate). 4/worker = 2 White + 2 Black,
 #   stays color-balanced. Stockfish eval kept at 64×... (its own knobs below).
-export EVAL_WORKERS=75
+export EVAL_WORKERS=100
 export GAMES_PER_EVAL_WORKER=4
-export STOCKFISH_WORKERS=75
-export STOCKFISH_GAMES=300
+export STOCKFISH_WORKERS=100
+export STOCKFISH_GAMES=400
 
 # Stockfish/Elo ONLY on promotion (EVERY_ITER=0): a rejected iter leaves best_model unchanged, so its
 # Elo is unchanged — re-measuring it just burns 200 games and adds ±CI noise to the trend. Now that
