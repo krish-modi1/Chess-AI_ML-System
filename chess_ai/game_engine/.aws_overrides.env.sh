@@ -87,7 +87,7 @@ export TRAIN_CHUNK_POSITIONS=2500000
 # dilutes the post-fix teacher signal. 30 was the proven pre-iter-40 default with a tiny train/val gap,
 # so reverting is overfitting-safe. NOTE: only iters 41+ are post-fix, so 30 still includes ~pre-fix
 # data — narrow further if the goal is purely post-fix data. Now fits ~1 RAM chunk (faster, no chunking).
-export TRAIN_WINDOW=20  # iter-79: 35→10. Tightest post-fix window — train only on the freshest (loosened-anchor, 0.5-prob/2000-sim) self-play, no stale-champion dilution
+export TRAIN_WINDOW=20  # iter-85: 35→10 (it79)→20. Widened back from the tight 10 (suspected overfit contributor to the it79-84 slide); trains on the freshest ~20 iters of 0.5-prob/2000-sim self-play
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
 export TRAIN_MIN_ITER=0
@@ -97,7 +97,7 @@ export TRAIN_MIN_ITER=0
 # only on the FIRST rejection: lineage continues from the rejected candidate (no wasted learning)
 # instead of resetting to champion. KL-anchor stays pinned to pretrained. Reversible: flip to 0 to
 # reset to champion if a lineage ever stalls (arena gate keeps self-play clean throughout).
-export TRAIN_FROM_LINEAGE=0
+export TRAIN_FROM_LINEAGE=1
 
 # Arena: 50 workers × 4 games = 200 games (tighter promotion gate). 4/worker = 2 White + 2 Black,
 #   stays color-balanced. Stockfish eval kept at 64×... (its own knobs below).
