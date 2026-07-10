@@ -59,7 +59,7 @@ class MetricsLogger:
             "timestamp": datetime.now().isoformat(),
             "policy_loss": float(p_loss),
             "value_loss": float(v_loss),
-            "arena_win_rate": float(arena_win_rate),
+            "arena_win_rate": float(arena_win_rate) if arena_win_rate is not None else None,
             "model_elo": float(elo) if elo is not None else None,
             "elo_measured": elo_measured,
             "stockfish_elo": int(stockfish_elo) if stockfish_elo is not None else None,

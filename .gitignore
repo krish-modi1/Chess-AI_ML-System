@@ -178,6 +178,7 @@ data/played_games/
 
 # Model checkpoints and weights
 model/checkpoints/
+champ_sf.json
 *.pth
 *.pt
 best_chess_model.pth

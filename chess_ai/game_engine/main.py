@@ -515,6 +515,7 @@ SELFPLAY_FARM = os.environ.get("SELFPLAY_FARM", "0") == "1"
 FARM_BANK_ITER = int(os.environ.get("FARM_BANK_ITER", "900"))
 BEST_MODEL = f"{MODEL_DIR}/best_model.pth"
 CANDIDATE_MODEL = f"{MODEL_DIR}/candidate.pth"
+CHAMP_SF_CACHE = f"{MODEL_DIR}/champ_sf.json"   # cached champion Stockfish-gate baseline (see _champ_sf_score)
 
 # --- CUDA ---
 CUDA_TIMEOUT_INFERENCE = float(os.environ.get("CUDA_TIMEOUT_INFERENCE", 0.02))
@@ -1390,12 +1391,13 @@ def run_probes(iteration):
     return markers or None
 
 
-def _sf_eval(model_path, iteration, tag):
+def _sf_eval(model_path, iteration, tag, num_games=None):
     """One Stockfish match for `model_path`; returns (win_rate, elo, results) or (None, None, None).
-    Used by the STOCKFISH_GATE paired A/B (champ vs cand). win_rate counts draws as 0.5."""
+    Used by the STOCKFISH_GATE. win_rate counts draws as 0.5. num_games defaults to STOCKFISH_GAMES."""
+    n = num_games or STOCKFISH_GAMES
     pgn_path = f"game_engine/evaluation/pgn/iter_{iteration}_{tag}_{int(time.time())}.pgn"
     try:
-        r = run_stockfish_eval_gpu(model_path=model_path, num_games=STOCKFISH_GAMES,
+        r = run_stockfish_eval_gpu(model_path=model_path, num_games=n,
                                    stockfish_path=STOCKFISH_PATH, sims=EVAL_SIMULATIONS,
                                    sf_elo=STOCKFISH_ELO, max_moves=EVAL_MAX_MOVES_PER_GAME, pgn_path=pgn_path)
     except Exception as e:
@@ -1405,8 +1407,35 @@ def _sf_eval(model_path, iteration, tag):
     w, d = r['win_count'], r['draw_count']; fd = r.get('forced_draw_count', 0); l = r['loss_count']
     tot = w + d + fd + l
     wr = (w + 0.5 * fd + 0.5 * d) / tot if tot else 0.0
-    print(f" [SF-gate] {tag:5s}: {wr*100:5.1f}%  ({w}W-{d}D-{fd}FD-{l}L)  Elo {r['model_elo']}")
+    print(f" [SF-gate] {tag:5s}: {wr*100:5.1f}%  ({w}W-{d}D-{fd}FD-{l}L)  Elo {r['model_elo']}  [{tot} games]")
     return wr, r['model_elo'], r
+
+
+def _champ_sf_score(iteration):
+    """Champion's Stockfish score, CACHED across iters — the champion (best_model.pth) is frozen between
+    promotions, so re-measuring it every iter just re-samples noise. Re-measures ONLY when best_model.pth
+    changed (mtime differs, incl. a manual cp promotion) or the cache is missing, at 2×STOCKFISH_GAMES for
+    a tight, unbiased baseline. Returns (win_rate, elo). Cache: model/champ_sf.json."""
+    try:
+        mtime = os.path.getmtime(BEST_MODEL)
+    except OSError:
+        mtime = 0.0
+    if os.path.exists(CHAMP_SF_CACHE):
+        try:
+            c = json.load(open(CHAMP_SF_CACHE))
+            if c.get("wr") is not None and abs(c.get("mtime", -1.0) - mtime) < 1e-6:
+                print(f" [SF-gate] champ: {c['wr']*100:5.1f}%  Elo {c.get('elo')}  (cached — best_model unchanged)")
+                return c["wr"], c.get("elo")
+        except Exception:
+            pass
+    wr, elo, _ = _sf_eval(BEST_MODEL, iteration, "champ", num_games=2 * STOCKFISH_GAMES)
+    if wr is not None:
+        try:
+            json.dump({"wr": wr, "elo": elo, "mtime": mtime, "games": 2 * STOCKFISH_GAMES},
+                      open(CHAMP_SF_CACHE, "w"))
+        except Exception:
+            pass
+    return wr, elo
 
 
 def run_evaluation_phase(iteration, logger, p_loss, v_loss, train_metrics=None):
@@ -1414,34 +1443,35 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss, train_metrics=None):
     probe_markers = run_probes(iteration)
     cleanup_memory() # Clear VRAM before launching multiple evaluation workers
 
-    # 1. ARENA EVALUATION — candidate vs champion, each on its own GPU InferenceServer.
-    total_games = EVAL_WORKERS * GAMES_PER_EVAL_WORKER
-    print(f" [Arena] Playing {total_games} games (candidate vs champion, 2 GPU servers)...")
-    arena = run_arena_eval_gpu(CANDIDATE_MODEL, BEST_MODEL, total_games,
-                               EVAL_SIMULATIONS, EVAL_MAX_MOVES_PER_GAME)
-    total_wins, total_draws = arena['wins'], arena['draws']
-    total_losses, total_forced_draws = arena['losses'], arena['forced_draws']
-
-    total_score = total_wins + 0.5 * total_forced_draws + 0.5 * total_draws
-    total_game_count = total_wins + total_draws + total_forced_draws + total_losses
-    win_rate = total_score / total_game_count if total_game_count > 0 else 0
-
-    print(f" [Arena] Final Result: {win_rate*100:.1f}% Win Rate ({total_wins}W - {total_draws}D - {total_forced_draws}FD - {total_losses}L)")
-
     est_elo = None
     arena_promoted = False
+    win_rate = None
     sf_gate = STOCKFISH_GATE and not NO_PROMOTE
+
+    # 1. ARENA EVALUATION — candidate vs champion. SKIPPED under the SF gate: Stockfish is the exact
+    #    ground-truth strength read, and the arena head-to-head is the self-referential artifact the gate
+    #    replaced (the SF-16 A/B proved the arena rejects candidates that are STRONGER vs Stockfish).
+    #    Running it would just burn EVAL_WORKERS*GAMES_PER_EVAL_WORKER games/iter for a non-gating number.
+    if not sf_gate:
+        total_games = EVAL_WORKERS * GAMES_PER_EVAL_WORKER
+        print(f" [Arena] Playing {total_games} games (candidate vs champion, 2 GPU servers)...")
+        arena = run_arena_eval_gpu(CANDIDATE_MODEL, BEST_MODEL, total_games,
+                                   EVAL_SIMULATIONS, EVAL_MAX_MOVES_PER_GAME)
+        total_wins, total_draws = arena['wins'], arena['draws']
+        total_losses, total_forced_draws = arena['losses'], arena['forced_draws']
+        total_score = total_wins + 0.5 * total_forced_draws + 0.5 * total_draws
+        total_game_count = total_wins + total_draws + total_forced_draws + total_losses
+        win_rate = total_score / total_game_count if total_game_count > 0 else 0
+        print(f" [Arena] Final Result: {win_rate*100:.1f}% Win Rate ({total_wins}W - {total_draws}D - {total_forced_draws}FD - {total_losses}L)")
 
     # 2. PROMOTION GATE.
     if sf_gate:
         # GROUND-TRUTH gate: promote iff the candidate scores >= the champion vs a NEUTRAL Stockfish
-        # opponent (paired A/B). Replaces the self-referential arena (kept above as a diagnostic only) —
-        # the SF-16 A/B proved the arena rejects candidates that are STRONGER vs Stockfish. Ties promote
-        # (keep the generator moving with a >=-strength net).
-        print(f" [SF-gate] arena WR {win_rate*100:.1f}% is DIAGNOSTIC only — gating on paired Stockfish "
-              f"A/B vs Elo {STOCKFISH_ELO} ({STOCKFISH_GAMES} games each)")
+        # opponent. Ties promote (keep the generator moving with a >=-strength net). The champion score
+        # is CACHED (frozen between promotions) so most iters pay only for the candidate's match.
+        print(f" [SF-gate] gating vs SF-{STOCKFISH_ELO}: candidate ({STOCKFISH_GAMES} games) vs cached champion baseline")
         cleanup_memory()
-        champ_wr, champ_elo, _ = _sf_eval(BEST_MODEL, iteration, "champ")
+        champ_wr, champ_elo = _champ_sf_score(iteration)   # re-measures only when best_model changed
         cleanup_memory()
         cand_wr, cand_elo, _ = _sf_eval(CANDIDATE_MODEL, iteration, "cand")
         if champ_wr is None or cand_wr is None:
