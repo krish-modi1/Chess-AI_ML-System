@@ -110,15 +110,17 @@ export TRAIN_MIN_ITER=0
 # reset to champion if a lineage ever stalls (arena gate keeps self-play clean throughout).
 export TRAIN_FROM_LINEAGE=1
 
-# Arena: 50 workers × 4 games = 200 games (tighter promotion gate). 4/worker = 2 White + 2 Black,
-#   stays color-balanced. Stockfish eval kept at 64×... (its own knobs below).
+# Eval sizing — BOTH arena and Stockfish at 100 workers × 4 games = 400 games each. 4/worker alternates
+#   W,B,W,B = 2 White + 2 Black, color-balanced. 400 games → 95% CI ±4.9% (vs ±5.7% at 300): with the
+#   0.50 gate the extra games trim the false-promotion risk of a near-parity net. STOCKFISH_WORKERS
+#   mirrors EVAL_WORKERS so both evals size together.
 export EVAL_WORKERS=100
 export GAMES_PER_EVAL_WORKER=4
 export STOCKFISH_WORKERS=100
 export STOCKFISH_GAMES=400
 
 # Stockfish/Elo ONLY on promotion (EVERY_ITER=0): a rejected iter leaves best_model unchanged, so its
-# Elo is unchanged — re-measuring it just burns 200 games and adds ±CI noise to the trend. Now that
+# Elo is unchanged — re-measuring it just burns 400 games and adds ±CI noise to the trend. Now that
 # BayesElo is reliable, measure the champion once per champion (on promotion); the logger carries the
 # last Elo forward on non-promoted iters (elo_measured=false). Arena still runs every iter (the gate).
 export STOCKFISH_EVERY_ITER=0
