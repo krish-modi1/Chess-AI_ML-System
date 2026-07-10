@@ -122,5 +122,5 @@ export STOCKFISH_GAMES=150   # iter-92: 400→150. Under STOCKFISH_GATE this run
 # arena still runs as a logged DIAGNOSTIC (arena_win_rate stays in metrics.json) but no longer gates.
 export STOCKFISH_GATE=1
 export STOCKFISH_EVERY_ITER=0   # ignored under the gate (the gate measures Elo every iter itself)
-export STOCKFISH_ELO=2300       # the validated A/B band: champ ~42%, cand ~52% → good gate resolution
+export STOCKFISH_ELO=2500       # the validated A/B band: champ ~42%, cand ~52% → good gate resolution
 export STOCKFISH_NODES=0
