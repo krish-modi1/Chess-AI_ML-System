@@ -650,6 +650,13 @@ NO_PROMOTE = os.environ.get("NO_PROMOTE", "0") == "1"
 # local/plans/arena-early-stop.md.
 PROMOTION_WIN_RATE = float(os.environ.get("PROMOTION_WIN_RATE", 0.55))
 ARENA_EARLY_STOP = os.environ.get("ARENA_EARLY_STOP", "1") == "1"
+# STOCKFISH-ANCHORED GATE: promote the candidate iff it scores >= the champion vs a NEUTRAL Stockfish
+# opponent (paired A/B, same level/games), instead of the self-referential arena head-to-head. The
+# SF-16 A/B (iter-91) proved the arena rejects candidates that are actually STRONGER vs Stockfish
+# (cand 52% / champ 42% @ SF-2300) — the arena measures a style matchup, not strength, and had frozen
+# the champion ~80 Elo too low for 30+ iters. With this ON, the arena still runs as a logged diagnostic
+# but does NOT gate. Costs 2 Stockfish matches/iter (champ + cand). See tools/sf_ab.sh.
+STOCKFISH_GATE = os.environ.get("STOCKFISH_GATE", "0") == "1"
 # Run the offline probes (probe_all + search_probe) automatically each iteration before the arena,
 # logging the headline markers to metrics.json for a per-iteration trend. See
 # local/plans/baked-in-probes.md.
@@ -1383,6 +1390,25 @@ def run_probes(iteration):
     return markers or None
 
 
+def _sf_eval(model_path, iteration, tag):
+    """One Stockfish match for `model_path`; returns (win_rate, elo, results) or (None, None, None).
+    Used by the STOCKFISH_GATE paired A/B (champ vs cand). win_rate counts draws as 0.5."""
+    pgn_path = f"game_engine/evaluation/pgn/iter_{iteration}_{tag}_{int(time.time())}.pgn"
+    try:
+        r = run_stockfish_eval_gpu(model_path=model_path, num_games=STOCKFISH_GAMES,
+                                   stockfish_path=STOCKFISH_PATH, sims=EVAL_SIMULATIONS,
+                                   sf_elo=STOCKFISH_ELO, max_moves=EVAL_MAX_MOVES_PER_GAME, pgn_path=pgn_path)
+    except Exception as e:
+        print(f" [SF-gate] {tag} match error: {e}"); return None, None, None
+    if not r:
+        return None, None, None
+    w, d = r['win_count'], r['draw_count']; fd = r.get('forced_draw_count', 0); l = r['loss_count']
+    tot = w + d + fd + l
+    wr = (w + 0.5 * fd + 0.5 * d) / tot if tot else 0.0
+    print(f" [SF-gate] {tag:5s}: {wr*100:5.1f}%  ({w}W-{d}D-{fd}FD-{l}L)  Elo {r['model_elo']}")
+    return wr, r['model_elo'], r
+
+
 def run_evaluation_phase(iteration, logger, p_loss, v_loss, train_metrics=None):
     print(f"\n=== ITERATION {iteration}: EVALUATION PHASE ===")
     probe_markers = run_probes(iteration)
@@ -1404,9 +1430,31 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss, train_metrics=None):
 
     est_elo = None
     arena_promoted = False
+    sf_gate = STOCKFISH_GATE and not NO_PROMOTE
 
-    # 2. PROMOTION — the arena win-rate is the SOLE promotion gate.
-    if win_rate >= PROMOTION_WIN_RATE:
+    # 2. PROMOTION GATE.
+    if sf_gate:
+        # GROUND-TRUTH gate: promote iff the candidate scores >= the champion vs a NEUTRAL Stockfish
+        # opponent (paired A/B). Replaces the self-referential arena (kept above as a diagnostic only) —
+        # the SF-16 A/B proved the arena rejects candidates that are STRONGER vs Stockfish. Ties promote
+        # (keep the generator moving with a >=-strength net).
+        print(f" [SF-gate] arena WR {win_rate*100:.1f}% is DIAGNOSTIC only — gating on paired Stockfish "
+              f"A/B vs Elo {STOCKFISH_ELO} ({STOCKFISH_GAMES} games each)")
+        cleanup_memory()
+        champ_wr, champ_elo, _ = _sf_eval(BEST_MODEL, iteration, "champ")
+        cleanup_memory()
+        cand_wr, cand_elo, _ = _sf_eval(CANDIDATE_MODEL, iteration, "cand")
+        if champ_wr is None or cand_wr is None:
+            print(" [SF-gate] ⚠️ a Stockfish match failed — NO promotion this iter (safe default).")
+            est_elo = champ_elo
+        elif cand_wr >= champ_wr:
+            print(f" [SF-gate] ⭐ PROMOTED — cand {cand_wr*100:.1f}% >= champ {champ_wr*100:.1f}% vs SF ⭐")
+            _promote_best()
+            est_elo = cand_elo   # the candidate is now the champion
+        else:
+            print(f" [SF-gate] rejected — cand {cand_wr*100:.1f}% < champ {champ_wr*100:.1f}% vs SF.")
+            est_elo = champ_elo
+    elif win_rate >= PROMOTION_WIN_RATE:
         print(f" [Arena] ⭐ Candidate PROMOTED! (WR >= {100*PROMOTION_WIN_RATE:.0f}%) ⭐")
         _promote_best()
         arena_promoted = True
@@ -1417,7 +1465,7 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss, train_metrics=None):
     #    the CANDIDATE every iteration to get an absolute-strength trend independent of the promotion
     #    gate (after a promotion the candidate IS the new champion, so it doubles as the champion's
     #    Elo). Metrics-only: it never promotes. NO_PROMOTE is the dry-run/test mode.
-    if STOCKFISH_EVERY_ITER or arena_promoted or NO_PROMOTE:
+    if not sf_gate and (STOCKFISH_EVERY_ITER or arena_promoted or NO_PROMOTE):
         tag = "new champion" if arena_promoted else "reigning champion"
         print(f" [Stockfish/BayesElo] Playing {STOCKFISH_GAMES} games vs Elo {STOCKFISH_ELO} ({tag})...")
         cleanup_memory()
@@ -1456,8 +1504,16 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss, train_metrics=None):
             import traceback
             traceback.print_exc()
             est_elo = None
-    else:
+    elif not sf_gate:
         print(f" [Stockfish] Skipped (STOCKFISH_EVERY_ITER=0, no promotion).")
+
+    # Record the SF-gate A/B scores into metrics.json (via probe markers) so the gate decision is
+    # trackable per-iter alongside the diagnostic arena WR. est_elo already carries the champion's Elo.
+    if sf_gate:
+        gate_markers = {"sf_gate_champ_wr": None if champ_wr is None else round(champ_wr, 4),
+                        "sf_gate_cand_wr": None if cand_wr is None else round(cand_wr, 4),
+                        "sf_gate_champ_elo": champ_elo, "sf_gate_cand_elo": cand_elo}
+        probe_markers = {**(probe_markers or {}), **gate_markers}
 
     logger.log(iteration, p_loss, v_loss, win_rate, est_elo, stockfish_elo=STOCKFISH_ELO,
                probe=probe_markers, train=train_metrics)

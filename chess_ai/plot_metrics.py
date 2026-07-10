@@ -111,6 +111,9 @@ INTERVENTIONS = [
     {"iter": 89, "label": "gate 0.55→0.50", "panels": {"winrate", "elo"}},
     # Lineage OFF (stop the monotonic drift) + train window 20→40. Fresh retrain from champion each iter.
     {"iter": 91, "label": "lineage off + win40", "panels": {"winrate", "elo", "loss", "value"}},
+    # Stockfish-anchored gate replaces the arena (arena WR now diagnostic-only); training knobs reverted.
+    # Champion re-promoted from the it56 freeze. Arena↔promotion decouple here (green dots may sit low).
+    {"iter": 92, "label": "SF gate + promote", "panels": {"winrate", "elo"}},
 ]
 
 
@@ -167,7 +170,15 @@ def col(history, key, zero_is_missing=False):
 
 def parse(history):
     it = np.array([h["iteration"] for h in history])
-    promoted = np.array([h.get("arena_win_rate", 0.0) >= gate_for(h["iteration"]) for h in history])
+
+    def _promoted(h):
+        # Under the Stockfish-anchored gate (iter-92+), promotion = cand >= champ vs Stockfish, NOT the
+        # arena WR. Prefer the sf_gate_* markers when present; fall back to the legacy arena-WR gate.
+        cw, hw = h.get("sf_gate_cand_wr"), h.get("sf_gate_champ_wr")
+        if cw is not None and hw is not None:
+            return cw >= hw
+        return h.get("arena_win_rate", 0.0) >= gate_for(h["iteration"])
+    promoted = np.array([_promoted(h) for h in history])
     return {
         "it": it,
         "promoted": promoted,

@@ -98,32 +98,22 @@ export TRAIN_CHUNK_POSITIONS=2500000
 # dilutes the post-fix teacher signal. 30 was the proven pre-iter-40 default with a tiny train/val gap,
 # so reverting is overfitting-safe. NOTE: only iters 41+ are post-fix, so 30 still includes ~pre-fix
 # data — narrow further if the goal is purely post-fix data. Now fits ~1 RAM chunk (faster, no chunking).
-export TRAIN_WINDOW=40  # iter-91: 20→40 paired with lineage-OFF. With lineage off each candidate is a FRESH
-                        # retrain from the champion + only 1 epoch → near-mirror; a wider window adds gradient
-                        # steps/epoch so it can move far enough to develop an edge, and pulls in the pre-iter-56
-                        # diversity tail. (hist: 35→10(it79)→20). NOTE: train/val gap ~0 (no classic overfit) —
-                        # the bet is off-distribution robustness, not overfit reduction. Watch: does cand cross 0.50?
+export TRAIN_WINDOW=20  # iter-92: REVERTED 40→20. The 40/lineage-off/epochs-2 combo was premised on
+                        # "candidate is weaker" — the SF-16 A/B DISPROVED that (cand 52% / champ 42% vs SF).
+                        # The real bug is the arena gate (see STOCKFISH_GATE below), not training. (hist: 35→10→20)
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
 export TRAIN_MIN_ITER=0
 
-# iter-91: TRAIN_EPOCHS 1→2 (box override; hyperparams default stays 1 for local/GCP). Paired with
-# lineage-OFF: 1 epoch from the frozen champion = near-mirror by construction, so 2 epochs lets the fresh
-# candidate move far enough to develop an edge. Conservative first step (not 4) given the "more training →
-# worse arena" prior — if iter-91 ticks UP, escalate to 3-4; if it drops BELOW 43%, that's the mirror
-# artifact (more fitting = worse) → revert, don't escalate. Window 40 supports 2 epochs w/o classic overfit.
-export TRAIN_EPOCHS=2
+# iter-92: TRAIN_EPOCHS reverted to the hyperparams default (1) — the epochs-2 bump was part of the
+# false-premise "candidate is weaker" combo (disproven by the SF A/B). No override here.
 
-# Train-from-lineage (AZ-2017): continue training from candidate.pth, not best_model.pth. NO-OP while
-# candidates keep promoting (promotion copies candidate→best, so the two bases are identical). Bites
-# only on the FIRST rejection: lineage continues from the rejected candidate (no wasted learning)
-# instead of resetting to champion.
-# iter-91: FLIPPED to 0 — the lineage STALLED and degraded monotonically (arena 0.479→0.441→0.430 over
-# it88-90, matching the documented 49→44 drift). Lineage compounds each iter's loss onto a worse base and
-# does NOT self-correct. OFF = each candidate retrains fresh from the FROZEN champion → stops the
-# compounding, holds the candidate near parity (~48% mirror) so the 0.50 gate can occasionally noise-cross
-# and unfreeze the self-play generator. Paired with TRAIN_WINDOW 20→40. Reversible: flip back to 1.
-export TRAIN_FROM_LINEAGE=0
+# Train-from-lineage (AZ-2017): continue training from candidate.pth, not best_model.pth.
+# iter-92: REVERTED to 1 (lineage ON). iter-91 flipped it OFF believing the lineage was degrading the
+# candidate (arena 0.479→0.441→0.430). But the SF-16 A/B proved the CURRENT lineage candidate is STRONGER
+# than the champion vs Stockfish (cand 52% / champ 42%) — the arena "drift" was the head-to-head style
+# artifact, NOT real degradation. Lineage was never the problem; the arena gate was. Kept ON.
+export TRAIN_FROM_LINEAGE=1
 
 # Eval sizing — BOTH arena and Stockfish at 100 workers × 4 games = 400 games each. 4/worker alternates
 #   W,B,W,B = 2 White + 2 Black, color-balanced. 400 games → 95% CI ±4.9% (vs ±5.7% at 300): with the
@@ -132,14 +122,18 @@ export TRAIN_FROM_LINEAGE=0
 export EVAL_WORKERS=100
 export GAMES_PER_EVAL_WORKER=4
 export STOCKFISH_WORKERS=100
-export STOCKFISH_GAMES=400
+export STOCKFISH_GAMES=150   # iter-92: 400→150. Under STOCKFISH_GATE this runs TWICE/iter (champ + cand),
+                            # so 150 each = 300 SF games/iter. ±4% CI each — enough to resolve the ~10-pt
+                            # champ↔cand gap (cand 52% vs champ 42% in the A/B). Bump if promotions look noisy.
 
-# Stockfish/Elo ONLY on promotion (EVERY_ITER=0): a rejected iter leaves best_model unchanged, so its
-# Elo is unchanged — re-measuring it just burns 400 games and adds ±CI noise to the trend. Now that
-# BayesElo is reliable, measure the champion once per champion (on promotion); the logger carries the
-# last Elo forward on non-promoted iters (elo_measured=false). Arena still runs every iter (the gate).
-export STOCKFISH_EVERY_ITER=0
-export STOCKFISH_ELO=2500
+# STOCKFISH-ANCHORED GATE (iter-92): replace the self-referential arena gate with a paired Stockfish A/B.
+# The SF-16 A/B proved the arena rejects candidates that are STRONGER vs a neutral opponent (cand 52% /
+# champ 42% @ SF-2300) — it measures a style matchup, not strength, and froze the champion ~80 Elo too low
+# for 30+ iters. With the gate ON: each iter measures champ + cand vs SF, promotes iff cand >= champ. The
+# arena still runs as a logged DIAGNOSTIC (arena_win_rate stays in metrics.json) but no longer gates.
+export STOCKFISH_GATE=1
+export STOCKFISH_EVERY_ITER=0   # ignored under the gate (the gate measures Elo every iter itself)
+export STOCKFISH_ELO=2300       # the validated A/B band: champ ~42%, cand ~52% → good gate resolution
 export STOCKFISH_NODES=0
 ENV
 export EXTRA_ENV="$OVR"
