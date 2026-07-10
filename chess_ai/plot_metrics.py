@@ -109,6 +109,8 @@ INTERVENTIONS = [
     {"iter": 87, "label": "TD λ=0.3 + aux", "panels": {"value", "loss"}},
     # Promotion gate 0.55 → 0.50 (unfreeze the self-play generator). Keep in sync with GATE_HISTORY.
     {"iter": 89, "label": "gate 0.55→0.50", "panels": {"winrate", "elo"}},
+    # Lineage OFF (stop the monotonic drift) + train window 20→40. Fresh retrain from champion each iter.
+    {"iter": 91, "label": "lineage off + win40", "panels": {"winrate", "elo", "loss", "value"}},
 ]
 
 

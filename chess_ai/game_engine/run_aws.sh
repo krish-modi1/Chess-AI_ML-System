@@ -98,17 +98,32 @@ export TRAIN_CHUNK_POSITIONS=2500000
 # dilutes the post-fix teacher signal. 30 was the proven pre-iter-40 default with a tiny train/val gap,
 # so reverting is overfitting-safe. NOTE: only iters 41+ are post-fix, so 30 still includes ~pre-fix
 # data — narrow further if the goal is purely post-fix data. Now fits ~1 RAM chunk (faster, no chunking).
-export TRAIN_WINDOW=20  # iter-85: 35→10 (it79)→20. Widened back from the tight 10 (suspected overfit contributor to the it79-84 slide); trains on the freshest ~20 iters of 0.5-prob/2000-sim self-play
+export TRAIN_WINDOW=40  # iter-91: 20→40 paired with lineage-OFF. With lineage off each candidate is a FRESH
+                        # retrain from the champion + only 1 epoch → near-mirror; a wider window adds gradient
+                        # steps/epoch so it can move far enough to develop an edge, and pulls in the pre-iter-56
+                        # diversity tail. (hist: 35→10(it79)→20). NOTE: train/val gap ~0 (no classic overfit) —
+                        # the bet is off-distribution robustness, not overfit reduction. Watch: does cand cross 0.50?
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
 export TRAIN_MIN_ITER=0
 
+# iter-91: TRAIN_EPOCHS 1→2 (box override; hyperparams default stays 1 for local/GCP). Paired with
+# lineage-OFF: 1 epoch from the frozen champion = near-mirror by construction, so 2 epochs lets the fresh
+# candidate move far enough to develop an edge. Conservative first step (not 4) given the "more training →
+# worse arena" prior — if iter-91 ticks UP, escalate to 3-4; if it drops BELOW 43%, that's the mirror
+# artifact (more fitting = worse) → revert, don't escalate. Window 40 supports 2 epochs w/o classic overfit.
+export TRAIN_EPOCHS=2
+
 # Train-from-lineage (AZ-2017): continue training from candidate.pth, not best_model.pth. NO-OP while
 # candidates keep promoting (promotion copies candidate→best, so the two bases are identical). Bites
 # only on the FIRST rejection: lineage continues from the rejected candidate (no wasted learning)
-# instead of resetting to champion. KL-anchor stays pinned to pretrained. Reversible: flip to 0 to
-# reset to champion if a lineage ever stalls (arena gate keeps self-play clean throughout).
-export TRAIN_FROM_LINEAGE=1
+# instead of resetting to champion.
+# iter-91: FLIPPED to 0 — the lineage STALLED and degraded monotonically (arena 0.479→0.441→0.430 over
+# it88-90, matching the documented 49→44 drift). Lineage compounds each iter's loss onto a worse base and
+# does NOT self-correct. OFF = each candidate retrains fresh from the FROZEN champion → stops the
+# compounding, holds the candidate near parity (~48% mirror) so the 0.50 gate can occasionally noise-cross
+# and unfreeze the self-play generator. Paired with TRAIN_WINDOW 20→40. Reversible: flip back to 1.
+export TRAIN_FROM_LINEAGE=0
 
 # Eval sizing — BOTH arena and Stockfish at 100 workers × 4 games = 400 games each. 4/worker alternates
 #   W,B,W,B = 2 White + 2 Black, color-balanced. 400 games → 95% CI ±4.9% (vs ±5.7% at 300): with the
