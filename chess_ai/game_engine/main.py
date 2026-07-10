@@ -129,30 +129,37 @@ def get_start_iteration(data_dir):
 # at the NEXT phase of the same iteration.
 _PHASES = ("self_play", "training", "eval")
 
-def save_phase(iteration, phase):
+def save_phase(iteration, phase, extra=None):
     os.makedirs(DATA_DIR, exist_ok=True)
+    state = {"iteration": iteration, "phase": phase}
+    if extra:
+        state.update(extra)   # e.g. training losses, so a resume-into-eval keeps them (not 0.0)
     tmp = RUN_STATE_FILE + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"iteration": iteration, "phase": phase}, f)
+        # default= coerces numpy/torch scalars in train_metrics to plain numbers for JSON.
+        json.dump(state, f, default=lambda o: o.item() if hasattr(o, "item") else str(o))
     os.replace(tmp, RUN_STATE_FILE)  # atomic write
 
 def load_resume_point():
-    """Return (start_iteration, start_phase) where start_phase is 1=self-play, 2=training,
-    3=eval — the phase the FIRST iteration of this run should begin at. Falls back to the
-    data-dir scan (fresh self-play of the next iteration) when no phase checkpoint exists."""
+    """Return (start_iteration, start_phase, extra) where start_phase is 1=self-play, 2=training,
+    3=eval — the phase the FIRST iteration of this run should begin at — and extra is any non-phase
+    payload persisted with the checkpoint (e.g. the training losses, so a resume-into-eval logs the
+    real numbers instead of 0.0). Falls back to the data-dir scan (fresh self-play of the next
+    iteration) when no phase checkpoint exists."""
     data_iter = get_start_iteration(DATA_DIR)
     if not os.path.exists(RUN_STATE_FILE):
-        return data_iter, 1
+        return data_iter, 1, {}
     try:
         with open(RUN_STATE_FILE) as f:
             st = json.load(f)
         it = int(st["iteration"])
         done = _PHASES.index(st["phase"]) + 1          # phases completed so far
+        extra = {k: v for k, v in st.items() if k not in ("iteration", "phase")}
         if done >= len(_PHASES):
-            return it + 1, 1                           # whole iteration done → next, fresh
-        return it, done + 1                            # resume at the phase after the last done
+            return it + 1, 1, {}                       # whole iteration done → next, fresh
+        return it, done + 1, extra                     # resume at the phase after the last done
     except Exception:
-        return data_iter, 1
+        return data_iter, 1, {}
 
 def cleanup_memory():
     """Forces garbage collection and clears CUDA cache to prevent OOM"""
@@ -1595,7 +1602,7 @@ if __name__ == "__main__":
     print(f"⏱️ Deadlock timeout: {timeout_handler.timeout_seconds/3600:.0f}h per iteration")
 
     # RESUMPTION LOGIC
-    start_iter, start_phase = load_resume_point()
+    start_iter, start_phase, resume_extra = load_resume_point()
 
     print("=" * 60)
     print(f"STARTING RUN")
@@ -1624,6 +1631,12 @@ if __name__ == "__main__":
             resume_phase = start_phase if it == start_iter else 1
             p_loss, v_loss = 0.0, 0.0
             train_metrics = {}
+            # Resume-into-eval: recover the training losses persisted by the pre-restart training
+            # phase so the metrics record isn't logged with zeros (see save_phase extra=).
+            if it == start_iter and resume_phase == 3 and resume_extra:
+                p_loss = float(resume_extra.get("p_loss") or 0.0)
+                v_loss = float(resume_extra.get("v_loss") or 0.0)
+                train_metrics = resume_extra.get("train_metrics") or {}
 
             # === PHASE 1: SELF-PLAY ===
             if resume_phase <= 1:
@@ -1678,7 +1691,10 @@ if __name__ == "__main__":
                         break
                     raise
                 print(f"⏱️  ITER {it} training took {_phase_dur(time.time() - _t_phase)}")
-                save_phase(it, "training")
+                # Persist the losses with the phase checkpoint so a restart that resumes directly
+                # into eval logs the REAL training losses (not the 0.0 defaults).
+                save_phase(it, "training", extra={"p_loss": p_loss, "v_loss": v_loss,
+                                                  "train_metrics": train_metrics})
 
             # CHECK AFTER PHASE 2
             if killer.kill_now:

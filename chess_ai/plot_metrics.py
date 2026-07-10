@@ -12,7 +12,10 @@ KataGo / RLHF literature:
     constraint plot; here it shows the policy staying pinned to the pretrained prior.
   * The MCTS-vs-net search metrics (top1-agree / override / KL / Δentropy) form the
     AlphaZero "policy improvement from search" panel.
-  * A reward–KL frontier (arena win-rate vs anchor KL) — the classic RLHF tradeoff.
+
+The arena is no longer a gate (the Stockfish-anchored promotion gate replaced it — see
+main.py STOCKFISH_GATE), so arena win-rate / reward-KL panels were removed: Elo vs Stockfish
+is the sole progress metric, alongside the training and offline-probe panels.
 
 Outputs a master dashboard.png plus standalone high-DPI transparent panels.
 Run from chess_ai/ (paths resolve relative to this file regardless of cwd):
@@ -31,7 +34,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import MultipleLocator
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
 # Paths anchored to this file so it works from repo root or chess_ai/.
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -53,7 +55,6 @@ def gate_for(iteration):
     return g
 
 
-PROMOTION_GATE = GATE_HISTORY[-1][1]  # latest gate — for reference lines on scatter panels
 DPI = 150
 # Supervised-pretrained base = iteration 0. Trained on Lichess human games (~1800),
 # measured ~1500 Elo vs Stockfish-1800 before any self-play. Loss values are read
@@ -190,7 +191,6 @@ def parse(history):
         "val_acc": col(history, "val_acc"),
         "kl_anchor": col(history, "kl_anchor"),
         "grad_norm": col(history, "grad_norm"),
-        "win_rate": col(history, "arena_win_rate"),
         "elo": col(history, "model_elo"),
         "elo_ci": col(history, "elo_ci"),
         "elo_measured": np.array([bool(h.get("elo_measured")) for h in history]),
@@ -338,25 +338,6 @@ def panel_acc(ax, H):
     _legend_below(ax, ncol=2)
 
 
-def panel_winrate(ax, H):
-    it, wr = H["it"], H["win_rate"]
-    m = ~np.isnan(wr)
-    colors = [C["value"] if p else C["reject"] for p in H["promoted"][m]]
-    ax.plot(it[m], wr[m], color=C["winrate"], lw=2.0, zorder=1)
-    ax.scatter(it[m], wr[m], c=colors, s=55, zorder=2, edgecolor="white", linewidth=1)
-    # Era-aware promotion gate: a stepped line (0.55 → 0.50 at the change) so the reference matches the
-    # gate that actually applied at each iteration, not a single flat value.
-    gate_lbl = ("Promotion gate" if len(GATE_HISTORY) == 1
-                else "Promotion gate (" + "→".join(f"{g:.2f}" for _, g in GATE_HISTORY) + ")")
-    ax.plot(it[m], np.array([gate_for(int(i)) for i in it[m]]), color=C["reject"], ls="--", lw=1.6,
-            drawstyle="steps-post", label=gate_lbl)
-    ax.set_ylim(0, 1)
-    ax.set_title("Arena Win Rate (candidate vs champion)")
-    ax.set_ylabel("Win rate")
-    _int_xaxis(ax, it, "winrate")
-    _legend_below(ax, ncol=1)
-
-
 def panel_kl(ax, H):
     it = H["it"]
     m = ~np.isnan(H["kl_anchor"])
@@ -418,48 +399,23 @@ def panel_grad(ax, H):
     _legend_below(ax, ncol=1)
 
 
-def panel_reward_kl(ax, H):
-    """Classic RLHF reward–KL frontier: how much arena gain we buy per nat of
-    drift from the reference policy, colored by iteration."""
-    x, y = H["kl_anchor"], H["win_rate"]
-    m = ~np.isnan(x) & ~np.isnan(y)
-    sc = ax.scatter(x[m], y[m], c=H["it"][m], cmap="viridis", s=70,
-                    edgecolor="white", linewidth=1, zorder=2)
-    for i in np.where(m)[0]:
-        ax.annotate(str(H["it"][i]), (x[i], y[i]), textcoords="offset points",
-                    xytext=(6, 4), fontsize=7, color="#475569")
-    # Points span both gate eras — draw a faint reference line for each distinct gate that applied.
-    for j, g in enumerate(sorted({v for _, v in GATE_HISTORY})):
-        ax.axhline(g, color=C["reject"], ls="--", lw=1.4, alpha=0.7 if j == 0 else 0.35)
-    ax.set_title("Reward–KL Frontier")
-    ax.set_xlabel("KL to reference (nats)")
-    ax.set_ylabel("Arena win rate")
-    # Inset colorbar so the axis stays the same size as its column siblings
-    # (an external colorbar would shrink this panel and break grid alignment).
-    cax = inset_axes(ax, width="3.5%", height="45%", loc="upper right", borderpad=1.2)
-    cax.grid(False)
-    cb = ax.figure.colorbar(sc, cax=cax)
-    cb.set_label("Iter", fontsize=7)
-    cb.ax.tick_params(labelsize=7)
-
-
 # ----------------------------------------------------------------------------
 # Composition
 # ----------------------------------------------------------------------------
 
 def build_dashboard(H):
+    # Elo is the sole progress metric (arena panels removed) → it headlines the top row
+    # spanning the full width; the training + probe panels fill the two rows below.
     fig = plt.figure(figsize=(24, 20), dpi=DPI)
     gs = GridSpec(3, 3, figure=fig, hspace=0.78, wspace=0.34,
                   left=0.05, right=0.97, top=0.93, bottom=0.04)
-    panel_elo(fig.add_subplot(gs[0, 0]), H)
-    panel_loss(fig.add_subplot(gs[0, 1]), H, "policy")
-    panel_loss(fig.add_subplot(gs[0, 2]), H, "value")
-    panel_acc(fig.add_subplot(gs[1, 0]), H)
-    panel_winrate(fig.add_subplot(gs[1, 1]), H)
-    panel_kl(fig.add_subplot(gs[1, 2]), H)
-    panel_search(fig.add_subplot(gs[2, 0]), H)
-    panel_value_calib(fig.add_subplot(gs[2, 1]), H)
-    panel_reward_kl(fig.add_subplot(gs[2, 2]), H)
+    panel_elo(fig.add_subplot(gs[0, :]), H)
+    panel_loss(fig.add_subplot(gs[1, 0]), H, "policy")
+    panel_loss(fig.add_subplot(gs[1, 1]), H, "value")
+    panel_acc(fig.add_subplot(gs[1, 2]), H)
+    panel_kl(fig.add_subplot(gs[2, 0]), H)
+    panel_search(fig.add_subplot(gs[2, 1]), H)
+    panel_value_calib(fig.add_subplot(gs[2, 2]), H)
 
     # Headline + footer.
     elo_now = H["elo"][~np.isnan(H["elo"])]
@@ -502,18 +458,17 @@ def main():
     print(f"Plotting {len(history)} iterations ({H['it'][0]}–{H['it'][-1]})...")
     build_dashboard(H)
 
-    # Standalone panels. The first four names match the legacy outputs so any
-    # downstream embeds keep working; the rest are the new analytical panels.
+    # Standalone panels. Elo is the headline progress metric; the rest are the
+    # training + offline-probe panels. (Arena win-rate / reward-KL removed — the
+    # Stockfish-anchored gate replaced the arena.)
+    save_panel("elo_rating.png", panel_elo, H)
     save_panel("policy_loss.png", lambda ax, h: panel_loss(ax, h, "policy"), H)
     save_panel("validation_loss.png", lambda ax, h: panel_loss(ax, h, "value"), H)
-    save_panel("candidate_winrate.png", panel_winrate, H)
-    save_panel("elo_rating.png", panel_elo, H)
     save_panel("accuracy.png", panel_acc, H)
     save_panel("kl_anchor.png", panel_kl, H)
     save_panel("search_improvement.png", panel_search, H)
     save_panel("value_calibration.png", panel_value_calib, H)
     save_panel("grad_norm.png", panel_grad, H)
-    save_panel("reward_kl_frontier.png", panel_reward_kl, H)
 
     print("\nDone.")
 
