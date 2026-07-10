@@ -238,8 +238,9 @@ def _int_xaxis(ax, it, mark=None):
     if base > 1:
         ax.xaxis.set_minor_locator(MultipleLocator(max(1, base // 5)))
     ax.set_xlabel("Iteration")
-    if mark is not None:
-        _mark_interventions(ax, mark)
+    # Intervention marker lines disabled — they were overlapping/covering the data. The registry
+    # (INTERVENTIONS) + _mark_interventions() are kept dormant; re-enable by restoring this call.
+    _ = mark
 
 
 def _legend_below(ax, ax2=None, ncol=2):
