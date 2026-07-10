@@ -10,14 +10,25 @@
 set -u
 cd "$(dirname "$0")/.."
 
-ELO="${ELO:-2300}"          # SF UCI_Elo. Want champ in the 30-70% band: drop to 2200 if champ<30%, raise to 2500 if >80%.
+ELO="${ELO:-2300}"          # SF UCI_Elo. Want champ in the 30-70% band: drop to 2100 if champ<30%, raise to 2500 if >80%.
 GAMES="${GAMES:-100}"       # per model; 100 → 95% CI ±5%, enough to resolve a ~7-10% champ↔cand gap.
 SIMS="${SIMS:-800}"         # match the arena's eval sims so the strength is comparable to the 43% arena number.
 WORKERS="${WORKERS:-25}"    # --server: CPU workers routed to one shared GPU model (25-30 fine on the 4090).
 MOVE_TIME="${MOVE_TIME:-0.1}"
 OUT="local/sf_ab"; mkdir -p "$OUT"
 
-CFG="--elo $ELO --sims $SIMS --games $GAMES --server --workers $WORKERS --move-time $MOVE_TIME"
+# CRITICAL: use the SAME from-source SF-16 the pipeline built ($HOME/.local/bin/stockfish, run_gcp.sh),
+# NOT apt's /usr/games/stockfish. The apt binary's UCI_Elo is miscalibrated (crushes the champ to ~5%
+# at "2300"); the built SF-16 is the one the 80%@2100 anchor was tuned on. See elo-measurement-findings.
+SF_BIN="${STOCKFISH_PATH:-$HOME/.local/bin/stockfish}"
+if [ ! -x "$SF_BIN" ]; then
+  echo "⚠️  SF-16 not found at $SF_BIN — falling back to /usr/games/stockfish (apt, MISCALIBRATED — "
+  echo "    champ will floor ~5% and the A/B won't resolve). Build SF-16 first (run_gcp.sh step 3)."
+  SF_BIN="/usr/games/stockfish"
+fi
+echo "SF binary: $SF_BIN  ($("$SF_BIN" --version 2>/dev/null | head -1))"
+
+CFG="--elo $ELO --sims $SIMS --games $GAMES --server --workers $WORKERS --move-time $MOVE_TIME --stockfish $SF_BIN"
 echo "=== SF A/B config: elo=$ELO games=$GAMES sims=$SIMS workers=$WORKERS (server) ==="
 
 run() {  # label  ckpt-path
