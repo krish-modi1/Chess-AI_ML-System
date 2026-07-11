@@ -109,11 +109,14 @@ export TRAIN_MIN_ITER=0
 # false-premise "candidate is weaker" combo (disproven by the SF A/B). No override here.
 
 # Train-from-lineage (AZ-2017): continue training from candidate.pth, not best_model.pth.
-# iter-92: REVERTED to 1 (lineage ON). iter-91 flipped it OFF believing the lineage was degrading the
-# candidate (arena 0.479→0.441→0.430). But the SF-16 A/B proved the CURRENT lineage candidate is STRONGER
-# than the champion vs Stockfish (cand 52% / champ 42%) — the arena "drift" was the head-to-head style
-# artifact, NOT real degradation. Lineage was never the problem; the arena gate was. Kept ON.
-export TRAIN_FROM_LINEAGE=1
+# iter-95: FLIPPED OFF. This time the SF gate (GROUND TRUTH, not the arena) shows REAL lineage
+# regression: the WR-gate bug froze the self-play generator at the iter-91 champion (it kept rejecting
+# stronger candidates), and with the generator frozen the lineage candidate drifted DOWN toward it —
+# cand Elo 2592 (iter-94) → 2484 (iter-95), now BELOW the champion (2498). Fresh-from-champion each iter
+# = champion + MCTS improvement, robustly >= champion, so promotions unfreeze the generator and it climbs
+# instead of spiraling. The old "lineage-off = ~48% mirror" was an ARENA artifact (fresh nets play alike,
+# arena can't tell them apart); the SF gate reads the real improvement, so lineage-off is safe now.
+export TRAIN_FROM_LINEAGE=0
 
 # Eval sizing — BOTH arena and Stockfish at 100 workers × 4 games = 400 games each. 4/worker alternates
 #   W,B,W,B = 2 White + 2 Black, color-balanced. 400 games → 95% CI ±4.9% (vs ±5.7% at 300): with the
