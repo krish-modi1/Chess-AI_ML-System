@@ -98,11 +98,14 @@ export TRAIN_MIN_ITER=0
 # false-premise "candidate is weaker" combo (disproven by the SF A/B). No override here.
 
 # Train-from-lineage (AZ-2017): continue training from candidate.pth, not best_model.pth.
-# iter-92: REVERTED to 1 (lineage ON). iter-91 flipped it OFF believing the lineage was degrading the
-# candidate (arena 0.479→0.441→0.430). But the SF-16 A/B proved the CURRENT lineage candidate is STRONGER
-# than the champion vs Stockfish (cand 52% / champ 42%) — the arena "drift" was the head-to-head style
-# artifact, NOT real degradation. Lineage was never the problem; the arena gate was. Kept ON.
-export TRAIN_FROM_LINEAGE=1
+# iter-95: FLIPPED OFF. This time the SF gate (GROUND TRUTH, not the arena) shows REAL lineage
+# regression: the WR-gate bug froze the self-play generator at the iter-91 champion (it kept rejecting
+# stronger candidates), and with the generator frozen the lineage candidate drifted DOWN toward it —
+# cand Elo 2592 (iter-94) → 2484 (iter-95), now BELOW the champion (2498). Fresh-from-champion each iter
+# = champion + MCTS improvement, robustly >= champion, so promotions unfreeze the generator and it climbs
+# instead of spiraling. The old "lineage-off = ~48% mirror" was an ARENA artifact (fresh nets play alike,
+# arena can't tell them apart); the SF gate reads the real improvement, so lineage-off is safe now.
+export TRAIN_FROM_LINEAGE=0
 
 # Eval sizing — BOTH arena and Stockfish at 100 workers × 4 games = 400 games each. 4/worker alternates
 #   W,B,W,B = 2 White + 2 Black, color-balanced. 400 games → 95% CI ±4.9% (vs ±5.7% at 300): with the
@@ -110,10 +113,10 @@ export TRAIN_FROM_LINEAGE=1
 #   mirrors EVAL_WORKERS so both evals size together.
 export EVAL_WORKERS=100
 export GAMES_PER_EVAL_WORKER=4
-export STOCKFISH_WORKERS=100
-export STOCKFISH_GAMES=150   # iter-92: 400→150. Under STOCKFISH_GATE this runs TWICE/iter (champ + cand),
-                            # so 150 each = 300 SF games/iter. ±4% CI each — enough to resolve the ~10-pt
-                            # champ↔cand gap (cand 52% vs champ 42% in the A/B). Bump if promotions look noisy.
+export STOCKFISH_WORKERS=150
+export STOCKFISH_GAMES=300   # iter-95: champ AND cand both run 300 games = 150 workers × 2 each (W,B —
+                            # color-balanced), SYMMETRICALLY (champ no longer 2×). Consistent, tighter
+                            # BayesElo (±~32 Elo) so the Elo gate resolves near-parity candidates.
 
 # STOCKFISH-ANCHORED GATE (iter-92): replace the self-referential arena gate with a paired Stockfish A/B.
 # The SF-16 A/B proved the arena rejects candidates that are STRONGER vs a neutral opponent (cand 52% /
@@ -122,5 +125,9 @@ export STOCKFISH_GAMES=150   # iter-92: 400→150. Under STOCKFISH_GATE this run
 # arena still runs as a logged DIAGNOSTIC (arena_win_rate stays in metrics.json) but no longer gates.
 export STOCKFISH_GATE=1
 export STOCKFISH_EVERY_ITER=0   # ignored under the gate (the gate measures Elo every iter itself)
-export STOCKFISH_ELO=2500       # the validated A/B band: champ ~42%, cand ~52% → good gate resolution
+# iter-95: gate now compares ANCHORED Elo (cand_elo >= champ_elo), NOT raw win rate — because the anchor
+# is raised as the net strengthens and a WR vs SF-2500 isn't comparable to a WR vs SF-2300. The champ
+# baseline is re-measured whenever this anchor changes (champ_sf.json keys on sf_elo), so both sides are
+# always scored at the SAME SF. Raise STOCKFISH_ELO further once the champion is comfortably beating it.
+export STOCKFISH_ELO=2500       # raised 2300→2500: the champion was crushing SF-2300 (WR saturating)
 export STOCKFISH_NODES=0
