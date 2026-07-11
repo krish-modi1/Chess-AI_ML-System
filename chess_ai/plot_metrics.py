@@ -45,6 +45,10 @@ OUTPUT_DIR = os.path.join(HERE, "game_engine", "evaluation", "plots")
 # old 0.50-0.55 rejections as promotions (dishonest). GATE_HISTORY = (first_iter, gate), ascending.
 # Adjust the 89 boundary if the box picked up the new config at a different iteration.
 GATE_HISTORY = [(0, 0.55), (89, 0.50)]
+# Iteration at which the Stockfish gate switched from raw-WR to anchored-Elo comparison (the SF anchor
+# is raised as the net strengthens, so WRs vs different SF levels aren't comparable — Elo is). Adjust if
+# the box picked up the new gate at a different iteration than the restart-targeted 95.
+SF_ELO_GATE_FROM = 95
 
 
 def gate_for(iteration):
@@ -173,12 +177,18 @@ def parse(history):
     it = np.array([h["iteration"] for h in history])
 
     def _promoted(h):
-        # Under the Stockfish-anchored gate (iter-92+), promotion = cand >= champ vs Stockfish, NOT the
-        # arena WR. Prefer the sf_gate_* markers when present; fall back to the legacy arena-WR gate.
+        # Stockfish-anchored gate. The comparison metric evolved: iters 92-94 gated on raw WR
+        # (cand_wr >= champ_wr); from SF_ELO_GATE_FROM the gate switched to ANCHORED Elo
+        # (cand_elo >= champ_elo) because the SF anchor is raised as the net strengthens and WRs
+        # across different anchors aren't comparable. Mirror that history so old stars stay accurate.
+        it = h["iteration"]
+        ce, he = h.get("sf_gate_cand_elo"), h.get("sf_gate_champ_elo")
         cw, hw = h.get("sf_gate_cand_wr"), h.get("sf_gate_champ_wr")
+        if it >= SF_ELO_GATE_FROM and ce is not None and he is not None:
+            return ce >= he
         if cw is not None and hw is not None:
             return cw >= hw
-        return h.get("arena_win_rate", 0.0) >= gate_for(h["iteration"])
+        return h.get("arena_win_rate", 0.0) >= gate_for(it)
     promoted = np.array([_promoted(h) for h in history])
     return {
         "it": it,
