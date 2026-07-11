@@ -98,15 +98,22 @@ export TRAIN_CHUNK_POSITIONS=2500000
 # dilutes the post-fix teacher signal. 30 was the proven pre-iter-40 default with a tiny train/val gap,
 # so reverting is overfitting-safe. NOTE: only iters 41+ are post-fix, so 30 still includes ~pre-fix
 # data — narrow further if the goal is purely post-fix data. Now fits ~1 RAM chunk (faster, no chunking).
-export TRAIN_WINDOW=20  # iter-92: REVERTED 40→20. The 40/lineage-off/epochs-2 combo was premised on
-                        # "candidate is weaker" — the SF-16 A/B DISPROVED that (cand 52% / champ 42% vs SF).
-                        # The real bug is the arena gate (see STOCKFISH_GATE below), not training. (hist: 35→10→20)
+export TRAIN_WINDOW=35  # iter-99: 20→35. Near-parity drought (it96-98: fresh-from-champion candidates
+                        # reproduce the champion at ~50% vs SF-2500, none clearing the bar). A wider window
+                        # = more/more-diverse self-play to learn from → more headroom to beat the champion.
+                        # (hist: 35→10→20→35)
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
 export TRAIN_MIN_ITER=0
 
-# iter-92: TRAIN_EPOCHS reverted to the hyperparams default (1) — the epochs-2 bump was part of the
-# false-premise "candidate is weaker" combo (disproven by the SF A/B). No override here.
+# iter-99: TRAIN_EPOCHS 1→2 (with the wider window). Overfit worry withdrawn: with lineage OFF the
+# candidate RESETS to the champion every iter, so epochs=2 is BOUNDED (2 passes then reset) — unlike
+# lineage-ON, which piled unbounded cumulative passes on the frozen-generator distribution (that WAS the
+# real overfit, i.e. the it94→95 drift). The historical epochs reverts were confounded: it67 was
+# "epochs=3 + lineage", it92 was a wrong-premise revert — no clean evidence epochs=2 overfits with
+# lineage off. Caveat: two knobs at once (window + epochs) → can't fully separate their effects.
+# Tripwire for BOTH: watch the train↓/val↑ gap in the loss panels; if it opens, drop epochs to 1.
+export TRAIN_EPOCHS=2
 
 # Train-from-lineage (AZ-2017): continue training from candidate.pth, not best_model.pth.
 # iter-95: FLIPPED OFF. This time the SF gate (GROUND TRUTH, not the arena) shows REAL lineage

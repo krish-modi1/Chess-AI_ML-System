@@ -283,33 +283,38 @@ def panel_elo(ax, H):
         i0 = np.where(is_pre)[0][0]
         ax.scatter([0], [elo[i0]], marker="D", s=90, color=C["value"], zorder=5,
                    edgecolor="white", linewidth=1.2, label="Pretrained (Lichess-1800 SL)")
-        sf0 = "" if np.isnan(H["sf_elo"][i0]) else f" · vs SF {int(H['sf_elo'][i0])}"
-        ax.annotate(f"Lichess-1800 SL\npretrain{sf0}", (0, elo[i0]),
-                    textcoords="offset points", xytext=(10, 4), fontsize=7,
+        ax.annotate("Lichess-1800 SL pretrain", (0, elo[i0]),
+                    textcoords="offset points", xytext=(10, 6), fontsize=7,
                     color=C["value"], fontweight="bold")
-    # Measured points (filled, with CI bars where available) vs carried-forward (hollow).
+    # Only MEASURED (fresh) points get a marker — the flat line segments between them already show the
+    # carried-forward (champion-held) periods, so a hollow dot at every held iteration is just noise.
     m_meas = mask & meas & ~is_pre
-    m_carry = mask & ~meas & ~is_pre
     cm = ~np.isnan(ci) & m_meas
     if cm.any():
         ax.errorbar(it[cm], elo[cm], yerr=ci[cm], fmt="none", ecolor=C["elo"],
                     elinewidth=1.4, capsize=4, alpha=0.7, zorder=1)
-    ax.scatter(it[m_meas], elo[m_meas], s=55, color=C["elo"], zorder=3,
+    ax.scatter(it[m_meas], elo[m_meas], s=45, color=C["elo"], zorder=3,
                edgecolor="white", linewidth=1, label="Measured")
-    if m_carry.any():
-        ax.scatter(it[m_carry], elo[m_carry], s=45, facecolor="white",
-                   edgecolor=C["elo"], linewidth=1.6, zorder=3, label="Carried forward")
     # Promotion stars.
     prom = mask & H["promoted"]
     if prom.any():
         ax.scatter(it[prom], elo[prom] + 6, marker="*", s=130, color=C["champ"],
                    zorder=4, label="Promoted")
-    # Annotate Stockfish anchor at each measured point.
+    # Stockfish anchor schedule as ONE compact caption in the empty lower area, instead of a label at
+    # every measured point (which stacked/collided at rapid anchor changes like 1800→2100→2800). Lists
+    # only the iteration each anchor first took effect — shows the anchor being raised as the net grows.
+    eras, prev_sf = [], None
     for i in np.where(m_meas)[0]:
-        if not np.isnan(H["sf_elo"][i]):
-            ax.annotate(f"SF {int(H['sf_elo'][i])}", (it[i], elo[i]),
-                        textcoords="offset points", xytext=(0, -16),
-                        ha="center", fontsize=7, color="#64748b")
+        sf = H["sf_elo"][i]
+        if np.isnan(sf):
+            continue
+        if int(sf) != prev_sf:
+            eras.append(f"it{int(it[i])}·SF{int(sf)}")
+            prev_sf = int(sf)
+    if eras:
+        ax.text(0.985, 0.05, "Stockfish anchor:   " + "    ".join(eras),
+                transform=ax.transAxes, ha="right", va="bottom", fontsize=7, color="#64748b",
+                bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="#e2e8f0", lw=0.8))
     ax.set_title("Elo Progression")
     ax.set_ylabel("Elo")
     _int_xaxis(ax, it, "elo")
