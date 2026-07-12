@@ -87,15 +87,20 @@ export TRAIN_CHUNK_POSITIONS=2500000
 # dilutes the post-fix teacher signal. 30 was the proven pre-iter-40 default with a tiny train/val gap,
 # so reverting is overfitting-safe. NOTE: only iters 41+ are post-fix, so 30 still includes ~pre-fix
 # data — narrow further if the goal is purely post-fix data. Now fits ~1 RAM chunk (faster, no chunking).
-export TRAIN_WINDOW=20  # iter-92: REVERTED 40→20. The 40/lineage-off/epochs-2 combo was premised on
-                        # "candidate is weaker" — the SF-16 A/B DISPROVED that (cand 52% / champ 42% vs SF).
-                        # The real bug is the arena gate (see STOCKFISH_GATE below), not training. (hist: 35→10→20)
+export TRAIN_WINDOW=25  # iter-100: 35→25. The 35/epochs-2 combo overfit at iter-99 (Va-V rose
+                        # 0.477→0.489 while Tr fell), so back off toward the 20 baseline but keep a bit
+                        # more data than 20. Near-parity drought persists (it96-98 candidates ~50% vs
+                        # SF-2500); the search probe (KL(MCTS‖net)=0.48, Δ=-0.05) says the real lever is
+                        # self-play SIMS/teacher strength, not window/epochs. (hist: 35→10→20→35→25)
 # FRESH-START LANDMINE: hyperparams sets TRAIN_MIN_ITER=8 (drop the old corrupted-run pre-iter-8 data).
 # On a clean restart from iter 1 that drops ALL data → training is skipped until iter 8. Keep everything.
 export TRAIN_MIN_ITER=0
 
-# iter-92: TRAIN_EPOCHS reverted to the hyperparams default (1) — the epochs-2 bump was part of the
-# false-premise "candidate is weaker" combo (disproven by the SF A/B). No override here.
+# iter-100: TRAIN_EPOCHS 2→1 (back to hyperparams default). iter-99 RAN epochs=2 and it overfit within
+# the iteration — the 2nd pass dropped train (Tr-P 1.164→1.146, Tr-V 0.475→0.472) but RAISED val
+# (Va-P 1.156→1.158, Va-V 0.477→0.489, Va-Acc 68.8→68.7). So the bounded per-iter overfit is REAL, just
+# smaller than lineage-ON's unbounded version. 1 epoch = one clean pass, no 2nd-epoch overfit.
+export TRAIN_EPOCHS=1
 
 # Train-from-lineage (AZ-2017): continue training from candidate.pth, not best_model.pth.
 # iter-95: FLIPPED OFF. This time the SF gate (GROUND TRUTH, not the arena) shows REAL lineage
@@ -106,6 +111,18 @@ export TRAIN_MIN_ITER=0
 # instead of spiraling. The old "lineage-off = ~48% mirror" was an ARENA artifact (fresh nets play alike,
 # arena can't tell them apart); the SF gate reads the real improvement, so lineage-off is safe now.
 export TRAIN_FROM_LINEAGE=0
+
+# SELF-PLAY TEACHER STRENGTH (iter-100): the SIMS_DIAGNOSTIC self-match proved depth MATTERS — champion
+# @4000 sims beat the same champion @2000 by 65.7% ± 7.6% (~+113 Elo). So the 2000-sim recorded targets
+# were an UNDER-POWERED teacher — candidates plateaued at parity because they were matching a champion
+# playing at only 2000-sim strength. (The old "target quality is not the wall" verdict at it77-79 was
+# reached under the BROKEN arena gate → suspect, and now directly contradicted by this clean self-match.)
+# Fix = DEEPEN the recorded target (2000→4000) while HALVING its frequency (0.5→0.25) so average self-play
+# compute stays ~flat: 0.25·4000 + 0.75·200 ≈ 1150 vs old 0.5·2000 + 0.5·200 ≈ 1100 sims/move. Quality-
+# over-quantity, KataGo-PCR style. WATCH: recorded targets/game also HALVE (25% of moves vs 50%), so the
+# training window holds ~half the positions — if the "Window: N pos" line drops too low, widen TRAIN_WINDOW.
+export SIMULATIONS=4000
+export FULL_SEARCH_PROB=0.25
 
 # Eval sizing — BOTH arena and Stockfish at 100 workers × 4 games = 400 games each. 4/worker alternates
 #   W,B,W,B = 2 White + 2 Black, color-balanced. 400 games → 95% CI ±4.9% (vs ±5.7% at 300): with the
