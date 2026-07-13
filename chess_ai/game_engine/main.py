@@ -480,7 +480,14 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                           plies_left=plies_left,
                           reply=reply)
 
-        print(f" [Worker {worker_id}] Finished Game {i+1} in {time.time()-game_start:.1f}s | Total Moves {len(game.moves)} | Result {result}")
+        # eff = the fraction of MCTS selections that reached a DISTINCT leaf. Virtual loss exists to
+        # keep this at ~100%; the pre-iter-109 inverted sign ran it at ~26%, so `SIMULATIONS` bought
+        # only about a quarter of the search it claimed. It must stay near 100% — if it sags, the
+        # search is self-colliding again and every sim count in the config is a lie.
+        _lt = worker.mcts_engine.leaves_total
+        _eff = (worker.mcts_engine.leaves_unique / _lt * 100.0) if _lt else 100.0
+        print(f" [Worker {worker_id}] Finished Game {i+1} in {time.time()-game_start:.1f}s | "
+              f"Total Moves {len(game.moves)} | Result {result} | eff-sims {_eff:.0f}%")
 
         gc.collect()
         if games_counter is not None:
