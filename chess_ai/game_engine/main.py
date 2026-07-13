@@ -1425,7 +1425,8 @@ def _champ_sf_score(iteration):
     measured vs a DIFFERENT Stockfish is not comparable to the candidate's — this is what silently broke
     the gate when the anchor was raised 2300→2500), or when the cache is missing. Measured at the SAME
     game count as the candidate (STOCKFISH_GAMES) so champ and cand are scored identically. Returns
-    (win_rate, elo). Cache: model/champ_sf.json."""
+    (win_rate, elo, elo_hi) — elo_hi is BayesElo's CI UPPER bound, the bar a candidate must CLEAR to
+    promote. Cache: model/champ_sf.json."""
     try:
         mtime = os.path.getmtime(BEST_MODEL)
     except OSError:
@@ -1433,21 +1434,25 @@ def _champ_sf_score(iteration):
     if os.path.exists(CHAMP_SF_CACHE):
         try:
             c = json.load(open(CHAMP_SF_CACHE))
-            if (c.get("wr") is not None and abs(c.get("mtime", -1.0) - mtime) < 1e-6
+            # elo_hi must be present: a pre-CI-gate cache would otherwise serve bar=None and silently
+            # fall back to the old no-margin (coin-flip) gate. Missing → re-measure to get the CI.
+            if (c.get("wr") is not None and c.get("elo_hi") is not None
+                    and abs(c.get("mtime", -1.0) - mtime) < 1e-6
                     and c.get("sf_elo") == STOCKFISH_ELO):
-                print(f" [SF-gate] champ: {c['wr']*100:5.1f}%  Elo {c.get('elo')}  "
+                print(f" [SF-gate] champ: {c['wr']*100:5.1f}%  Elo {c.get('elo')} (hi {c.get('elo_hi')})  "
                       f"(cached — best_model & SF-{STOCKFISH_ELO} unchanged)")
-                return c["wr"], c.get("elo")
+                return c["wr"], c.get("elo"), c.get("elo_hi")
         except Exception:
             pass
-    wr, elo, _ = _sf_eval(BEST_MODEL, iteration, "champ")   # same game count as the candidate
+    wr, elo, r = _sf_eval(BEST_MODEL, iteration, "champ")   # same game count as the candidate
+    elo_hi = r.get("elo_upper") if r else None
     if wr is not None:
         try:
-            json.dump({"wr": wr, "elo": elo, "mtime": mtime, "sf_elo": STOCKFISH_ELO,
-                       "games": STOCKFISH_GAMES}, open(CHAMP_SF_CACHE, "w"))
+            json.dump({"wr": wr, "elo": elo, "elo_hi": elo_hi, "mtime": mtime,
+                       "sf_elo": STOCKFISH_ELO, "games": STOCKFISH_GAMES}, open(CHAMP_SF_CACHE, "w"))
         except Exception:
             pass
-    return wr, elo
+    return wr, elo, elo_hi
 
 
 def run_evaluation_phase(iteration, logger, p_loss, v_loss, train_metrics=None):
@@ -1486,7 +1491,7 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss, train_metrics=None):
         # anchor changes, so both sides are always scored at the SAME SF. Ties promote.
         print(f" [SF-gate] gating vs SF-{STOCKFISH_ELO}: candidate ({STOCKFISH_GAMES} games) vs cached champion baseline")
         cleanup_memory()
-        champ_wr, champ_elo = _champ_sf_score(iteration)   # re-measures on best_model OR anchor change
+        champ_wr, champ_elo, champ_hi = _champ_sf_score(iteration)   # re-measures on best_model OR anchor change
         cleanup_memory()
         cand_wr, cand_elo, _ = _sf_eval(CANDIDATE_MODEL, iteration, "cand")
         if champ_wr is None or cand_wr is None:
@@ -1494,10 +1499,16 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss, train_metrics=None):
             est_elo = champ_elo
             promote = False
         elif cand_elo is not None and champ_elo is not None:
-            promote = cand_elo >= champ_elo   # anchored-Elo gate (primary)
+            # Promote only when the candidate is CLEARLY better: its Elo must clear the champion's
+            # BayesElo CI UPPER bound, not merely tie the point estimate. A >= point-estimate gate
+            # promoted coin-flips (it103-107: 4 promotions in 5 iters, all marginal, champion flat at
+            # ~2470) — at parity, half of equal-strength candidates clear the bar by noise alone. This
+            # bar is self-calibrating: more games → tighter CI → smaller edge required.
+            bar = champ_hi if champ_hi is not None else champ_elo   # CI missing → fall back to point est
+            promote = cand_elo > bar
             verb = "⭐ PROMOTED" if promote else "rejected"
-            print(f" [SF-gate] {verb} — cand Elo {cand_elo:.0f} {'>=' if promote else '<'} champ Elo "
-                  f"{champ_elo:.0f}  (WR {cand_wr*100:.1f}% vs {champ_wr*100:.1f}%)")
+            print(f" [SF-gate] {verb} — cand Elo {cand_elo:.0f} {'>' if promote else '<='} champ CI-upper "
+                  f"{bar:.0f} (champ Elo {champ_elo:.0f})  (WR {cand_wr*100:.1f}% vs {champ_wr*100:.1f}%)")
         else:
             # A 0%/100% sweep left one Elo unbounded (None). Both sides are at the SAME anchor, so raw WR
             # is a valid tiebreak here (e.g. cand swept 100% → clearly promote & time to raise the anchor).
@@ -1567,7 +1578,8 @@ def run_evaluation_phase(iteration, logger, p_loss, v_loss, train_metrics=None):
     if sf_gate:
         gate_markers = {"sf_gate_champ_wr": None if champ_wr is None else round(champ_wr, 4),
                         "sf_gate_cand_wr": None if cand_wr is None else round(cand_wr, 4),
-                        "sf_gate_champ_elo": champ_elo, "sf_gate_cand_elo": cand_elo}
+                        "sf_gate_champ_elo": champ_elo, "sf_gate_cand_elo": cand_elo,
+                        "sf_gate_champ_hi": champ_hi}   # the promotion bar (champion's CI upper)
         probe_markers = {**(probe_markers or {}), **gate_markers}
 
     logger.log(iteration, p_loss, v_loss, win_rate, est_elo, stockfish_elo=STOCKFISH_ELO,

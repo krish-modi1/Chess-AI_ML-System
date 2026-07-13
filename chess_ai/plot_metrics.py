@@ -183,9 +183,12 @@ def parse(history):
         # across different anchors aren't comparable. Mirror that history so old stars stay accurate.
         it = h["iteration"]
         ce, he = h.get("sf_gate_cand_elo"), h.get("sf_gate_champ_elo")
+        hi = h.get("sf_gate_champ_hi")   # CI-upper bar — only logged once the gate required a CLEAR win
         cw, hw = h.get("sf_gate_cand_wr"), h.get("sf_gate_champ_wr")
+        if ce is not None and hi is not None:
+            return ce > hi               # candidate must CLEAR the champion's BayesElo CI upper bound
         if it >= SF_ELO_GATE_FROM and ce is not None and he is not None:
-            return ce >= he
+            return ce >= he              # legacy: point-estimate tie promoted (it92-107)
         if cw is not None and hw is not None:
             return cw >= hw
         return h.get("arena_win_rate", 0.0) >= gate_for(it)
