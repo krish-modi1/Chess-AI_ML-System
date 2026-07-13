@@ -52,5 +52,7 @@ PYBIND11_MODULE(mcts_engine_cpp, m)
 
         .def_readwrite("simulations", &MCTSEngine::simulations)
         .def_readwrite("batch_size", &MCTSEngine::batch_size)
-        .def_readonly("last_search_value", &MCTSEngine::last_search_value);
+        .def_readonly("last_search_value", &MCTSEngine::last_search_value)
+        .def_readonly("leaves_total", &MCTSEngine::leaves_total)
+        .def_readonly("leaves_unique", &MCTSEngine::leaves_unique);
 }

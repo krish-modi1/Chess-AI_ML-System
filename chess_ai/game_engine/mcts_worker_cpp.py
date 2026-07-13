@@ -17,7 +17,7 @@ import numpy as np
 import torch
 import sys
 import os
-import time
+import queue
 
 # Max wait for ONE inference round-trip (not per-move). Individual calls stay fast even with
 # heavy worker oversubscription — the server clears all pending workers in ~1 batch — so 300s
@@ -133,25 +133,15 @@ class MCTSWorker:
     # ═══════════════════════════════════════════════════════════════════════════
 
     def _get_inference_result(self, timeout_ms=_INFERENCE_TIMEOUT_MS):
-        """
-        Poll for inference results with non-blocking timeout.
+        """Block for this worker's inference reply, or raise TimeoutError.
 
-        This prevents workers from blocking indefinitely and allows
-        the queue to fill properly with batched requests.
+        (Was a 1 ms spin-loop wrapped in a bare `except:` — which also swallowed KeyboardInterrupt
+        and every genuine queue error, spinning until the full timeout instead of failing.)
         """
-        start_time = time.time()
-
-        while True:
-            try:
-                # Poll with 1ms timeout
-                result = self.output_queue.get(timeout=0.001)
-                return result
-            except:
-                elapsed_ms = (time.time() - start_time) * 1000
-                if elapsed_ms > timeout_ms:
-                    raise TimeoutError(
-                        f"[Worker {self.worker_id}] No inference response in {timeout_ms}ms"
-                    )
+        try:
+            return self.output_queue.get(timeout=timeout_ms / 1000.0)
+        except queue.Empty:
+            raise TimeoutError(f"[Worker {self.worker_id}] No inference response in {timeout_ms}ms")
 
     def _flush_output_queue(self):
         """Discard any stale result still in the queue (e.g. a late arrival from a previously
@@ -192,14 +182,14 @@ class MCTSWorker:
             self._inp_view[:n] = torch.from_numpy(arr)          # write our slot
             self._flush_output_queue()                          # drop any stale late result
             self.input_queue.put((self.worker_id, n))           # tiny signal, no tensor
-            try:
-                self._get_inference_result()                    # block for (n,) sentinel
-            except TimeoutError:
-                print(f"[Worker {self.worker_id}] ❌ Inference timeout in callback")
-                return (
-                    np.zeros((batch_size, 4672), dtype=np.float32),
-                    np.zeros((batch_size,), dtype=np.float32)
-                )
+            # No zeros-fallback on timeout. Returning zeros here expanded the tree with all-zero
+            # logits (= uniform priors) and backed up a FABRICATED 0.0 eval, silently poisoning the
+            # visit distribution that becomes the recorded policy target — and, since a timeout can
+            # mean "server slow", the worker would race ahead and overwrite its SHM input slot while
+            # the still-running server wrote the old request's result into it. Raise instead: the
+            # root path (search()) already does, pybind11 propagates it out of the C++ search, and
+            # the deadlock-salvage machinery handles a dead worker. Loud beats silently wrong.
+            self._get_inference_result()                        # block for (n,) sentinel; raises on timeout
             # .clone() is mandatory: the next request will overwrite this slot.
             policies_np = self._pol_view[:n].clone().numpy()
             v = self._val_view[:n].clone()                      # (n, 3) raw logits
@@ -213,14 +203,7 @@ class MCTSWorker:
         self._flush_output_queue()
         self.input_queue.put((self.worker_id, batch_tensor))
 
-        try:
-            policies, values = self._get_inference_result()
-        except TimeoutError:
-            print(f"[Worker {self.worker_id}] ❌ Inference timeout in callback")
-            return (
-                np.zeros((batch_size, 4672), dtype=np.float32),
-                np.zeros((batch_size,), dtype=np.float32)
-            )
+        policies, values = self._get_inference_result()   # raises on timeout; see the SHM path's note
 
         if isinstance(policies, torch.Tensor):
             policies_np = policies.detach().cpu().numpy()

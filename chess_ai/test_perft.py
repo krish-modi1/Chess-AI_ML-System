@@ -1,8 +1,8 @@
 """Perft test — validates C++ move generation against known node counts.
-NOTE: Requires ChessBoard to be exposed to Python (Task 7). Run after Task 7.
+Run from the repo root: python3 chess_ai/test_perft.py
 """
 import sys, os
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "game_engine"))
 import mcts_engine_cpp
 
 def perft(board, depth):

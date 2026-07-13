@@ -345,7 +345,14 @@ def run_worker_batch(worker_id, input_queue, output_queue, game_limit, iteration
                 else:
                     is_full = True
 
-                # Snapshot history for this search (excludes current board)
+                # History snapshot for this search. NOTE the actual convention (the comment here used
+                # to claim the opposite): position_history is appended AFTER game.push() below, so
+                # from move 2 on history_snapshot[0] IS the current board — to_tensor's Frame 1
+                # duplicates Frame 0 and every deeper frame is shifted a ply. That costs one frame of
+                # history depth, but it defines the distribution the net has been trained on for 100+
+                # iterations, so the EVAL workers were changed to match this (not the reverse).
+                # Changing it here would shift the training distribution and needs a full window to
+                # wash through — do it only at a deliberate reset.
                 history_snapshot = list(position_history)
                 best_move, mcts_policy = worker.search(
                     game, temperature=current_temp, history=history_snapshot,
@@ -637,6 +644,11 @@ STOCKFISH_GAMES = int(os.environ.get("STOCKFISH_GAMES", 20))
 # EVAL_WORKERS. Falls back to EVAL_WORKERS if unset.
 STOCKFISH_WORKERS = int(os.environ.get("STOCKFISH_WORKERS", EVAL_WORKERS))
 STOCKFISH_ELO = int(os.environ.get("STOCKFISH_ELO", 1320))
+# Wall-clock budget PER GAME a worker has to play; the collection deadline is this × the busiest
+# worker's game count. Replaces a flat 1800 s that was BOTH unscaled and too tight: at the live
+# 150 workers × 2 games it truncated 300-game matches to ~263-272 and fed the partial PGN to
+# BayesElo. 1200 s/game keeps the same shape but with headroom for the slow tail.
+SF_EVAL_DEADLINE_PER_GAME = int(os.environ.get("SF_EVAL_DEADLINE_PER_GAME", 1200))
 # Stockfish move budget: fixed NODES (reproducible across machines/versions) when >0, else the
 # legacy wall-time (0.1s, CPU-dependent). Set to the A_low anchor (anchors.json: 100000) so the
 # loop's per-iter Elo lands on the SAME scale as the round-robin ladder. UCI_Elo limiting still
@@ -753,8 +765,19 @@ def run_stockfish_server_worker(worker_id, in_q, out_q, n_games, stockfish_path,
                 if mv is None:
                     break
                 worker.advance_root(mv)
+                # An illegal move leaves the board unchanged, so len(game.moves) never grows and this
+                # loop spins on the same position forever (the tree has already advanced into the
+                # wrong subtree) until the server deadlock guard kills the phase. Self-play already
+                # guards this; the eval workers did not.
+                if not game.push(mv):
+                    print(f"[SF Worker {worker_id}] game {game_id}: illegal move {mv} — aborting game")
+                    break
+                # Append AFTER the push, matching self-play (main.py's run_worker_batch). The net is
+                # trained exclusively on self-play tensors, where history[0] is the position the NEXT
+                # search runs from. Appending the PRE-push board here (the old code) shifted every one
+                # of the 7 history frames by a ply, so every Elo/gate number was measured on input
+                # planes the net had never seen in training.
                 history.appendleft(game.board.copy())
-                game.push(mv)
         except Exception as e:
             print(f"[SF Worker {worker_id}] game {game_id} error: {e}")
             result_q.put(None)
@@ -829,10 +852,16 @@ def run_stockfish_eval_gpu(model_path, num_games, stockfish_path, sims, sf_elo, 
         p.start(); workers.append(p)
 
     results = []
-    deadline = time.time() + 1800   # global cap so one slow game can't abort the whole collection
+    # Global cap so one slow game can't abort the whole collection — but it MUST scale with the
+    # work each worker was given. A flat 1800 s silently truncated 300-game gate matches (observed
+    # "[263 games]", "[272 games]") and fed the partial PGN to BayesElo, so the gate quietly decided
+    # on a smaller, wider-CI sample than the math assumed.
+    deadline = time.time() + SF_EVAL_DEADLINE_PER_GAME * max(per)
     for _ in range(num_games):
         remaining = deadline - time.time()
         if remaining <= 0:
+            print(f"  ⚠️ Stockfish eval: deadline hit — collected {len(results)}/{num_games} games; "
+                  f"the gate will be decided on the partial sample (raise SF_EVAL_DEADLINE_PER_GAME).")
             break
         # Bail fast if the server died mid-eval (deadlock guard) rather than burning the full
         # deadline waiting on games that can never arrive; score what completed.
@@ -951,11 +980,11 @@ def run_arena_server_worker(worker_id, n_games, cand_in_q, cand_out_q, champ_in_
                 for u in opening.split():
                     if game.is_over:
                         break
-                    board_before = game.board.copy()
                     if not game.push(u):
                         break
                     cand.advance_root(u); champ.advance_root(u)
-                    history.appendleft(board_before)
+                    # POST-push board, matching self-play/training (see the SF worker's note).
+                    history.appendleft(game.board.copy())
             aborted = False
             try:
                 while not game.is_over and len(game.moves) < max_moves:
@@ -972,8 +1001,11 @@ def run_arena_server_worker(worker_id, n_games, cand_in_q, cand_out_q, champ_in_
                         break
                     # Both trees track the same game line.
                     cand.advance_root(mv); champ.advance_root(mv)
+                    if not game.push(mv):   # illegal move → spins forever; see the SF worker's note
+                        print(f"[Arena Worker {worker_id}] game {game_id}: illegal move {mv} — aborting game")
+                        break
+                    # POST-push board, matching self-play/training (see the SF worker's note).
                     history.appendleft(game.board.copy())
-                    game.push(mv)
             except Exception as e:
                 print(f"[Arena Worker {worker_id}] game {game_id} error: {e}")
                 continue
@@ -1436,9 +1468,16 @@ def _champ_sf_score(iteration):
             c = json.load(open(CHAMP_SF_CACHE))
             # elo_hi must be present: a pre-CI-gate cache would otherwise serve bar=None and silently
             # fall back to the old no-margin (coin-flip) gate. Missing → re-measure to get the CI.
+            # Every input the measurement depends on must be part of the cache key. `games` in
+            # particular: the CI width (and therefore the promotion bar elo_hi) scales with the
+            # sample size, so serving a 150-game champion measurement against 300-game candidates
+            # inflates the bar and rejects genuinely stronger candidates — the exact failure the
+            # CI gate exists to prevent. Same for the search budget the champion was measured at.
             if (c.get("wr") is not None and c.get("elo_hi") is not None
                     and abs(c.get("mtime", -1.0) - mtime) < 1e-6
-                    and c.get("sf_elo") == STOCKFISH_ELO):
+                    and c.get("sf_elo") == STOCKFISH_ELO
+                    and c.get("games") == STOCKFISH_GAMES
+                    and c.get("eval_sims") == EVAL_SIMULATIONS):
                 print(f" [SF-gate] champ: {c['wr']*100:5.1f}%  Elo {c.get('elo')} (hi {c.get('elo_hi')})  "
                       f"(cached — best_model & SF-{STOCKFISH_ELO} unchanged)")
                 return c["wr"], c.get("elo"), c.get("elo_hi")
@@ -1449,7 +1488,8 @@ def _champ_sf_score(iteration):
     if wr is not None:
         try:
             json.dump({"wr": wr, "elo": elo, "elo_hi": elo_hi, "mtime": mtime,
-                       "sf_elo": STOCKFISH_ELO, "games": STOCKFISH_GAMES}, open(CHAMP_SF_CACHE, "w"))
+                       "sf_elo": STOCKFISH_ELO, "games": STOCKFISH_GAMES,
+                       "eval_sims": EVAL_SIMULATIONS}, open(CHAMP_SF_CACHE, "w"))
         except Exception:
             pass
     return wr, elo, elo_hi

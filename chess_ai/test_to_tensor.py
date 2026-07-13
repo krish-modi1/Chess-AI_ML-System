@@ -1,8 +1,8 @@
 """Cross-validate C++ to_tensor output against Python chess_env.py.
-NOTE: Requires ChessBoard to be exposed to Python (Task 7). Run after Task 7.
+Run from the repo root: python3 chess_ai/test_to_tensor.py
 """
 import sys, os
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "game_engine"))
 
 import numpy as np
 import mcts_engine_cpp

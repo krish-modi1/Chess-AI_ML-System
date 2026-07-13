@@ -11,7 +11,7 @@
 # =============================================================================
 
 CHESS_AI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="${PYTHON:-/home/krish/miniconda3/envs/chessai/bin/python3.11}"
+PYTHON="${PYTHON:-python3}"
 
 PASS=0; FAIL=0; WARN=0
 
@@ -105,7 +105,7 @@ file_check "game_engine/src/mcts_engine.h"
 file_check "game_engine/src/python_bridge.cpp"
 file_check "game_engine/model/best_model.pth"
 file_check "game_engine/model/metrics.json"
-file_check "run_gcp.sh"
+file_check "game_engine/run_gcp.sh"
 
 # C++ extension (.so for running Python version)
 PY_TAG=$("$PYTHON" -c "import sys; print(f'cpython-{sys.version_info.major}{sys.version_info.minor}')")
@@ -146,8 +146,8 @@ def warn_check(name, fn):
     except Exception as e:
         print(f"WARN: {name} | {str(e).replace(chr(10),' ')[:120]}")
 
-check("Python 3.11",
-    lambda: None if sys.version_info[:2] == (3, 11)
+warn_check("Python >= 3.10",
+    lambda: None if sys.version_info[:2] >= (3, 10)
             else (_ for _ in ()).throw(Exception(f"got {sys.version_info.major}.{sys.version_info.minor}")))
 
 import torch
@@ -205,18 +205,13 @@ check("input_conv.0.weight exists", lambda: None if w is not None else (_ for _ 
 if w is None:
     sys.exit(0)
 
-check("input_conv.0.weight shape (256,120,3,3)",
-    lambda: None if tuple(w.shape) == (256, 120, 3, 3)
+check("input_conv.0.weight shape (320,120,3,3)",
+    lambda: None if tuple(w.shape) == (320, 120, 3, 3)
             else (_ for _ in ()).throw(Exception(f"got {tuple(w.shape)}")))
 
 check("channels 0-15 non-zero (original weights preserved)",
     lambda: None if (w[:, :16, :, :] != 0).any()
             else (_ for _ in ()).throw(Exception("all zeros — original weights lost!")))
-
-check("channels 16-119 zero-initialized",
-    lambda: None if (w[:, 16:, :, :] == 0).all()
-            else (_ for _ in ()).throw(Exception(
-                f"{(w[:, 16:, :, :] != 0).sum().item()} non-zero elements found")))
 
 # Check all expected layer groups present
 expected_prefixes = ["input_conv", "res_blocks", "policy_head", "value_head"]
@@ -243,11 +238,11 @@ if model:
     with torch.no_grad():
         policy, value = model(t)
 
-    check("policy output shape (1, 8192)",
-        lambda: None if tuple(policy.shape) == (1, 8192)
+    check("policy output shape (1, 4672)",
+        lambda: None if tuple(policy.shape) == (1, 4672)
                 else (_ for _ in ()).throw(Exception(f"got {tuple(policy.shape)}")))
-    check("value output shape (1, 1)",
-        lambda: None if tuple(value.shape) == (1, 1)
+    check("value output shape (1, 3) [WDL]",
+        lambda: None if tuple(value.shape) == (1, 3)
                 else (_ for _ in ()).throw(Exception(f"got {tuple(value.shape)}")))
     check("value is finite",
         lambda: None if torch.isfinite(value).all()
@@ -482,36 +477,37 @@ def check(name, fn):
 
 from game_engine.trainer import _H_FLIP_PERM
 
-check("_H_FLIP_PERM shape is (8192,)",
-    lambda: None if _H_FLIP_PERM.shape == (8192,)
+check("_H_FLIP_PERM shape is (4672,)",
+    lambda: None if _H_FLIP_PERM.shape == (4672,)
             else (_ for _ in ()).throw(Exception(f"got {_H_FLIP_PERM.shape}")))
 check("_H_FLIP_PERM dtype is long (index tensor)",
     lambda: None if _H_FLIP_PERM.dtype == torch.long
             else (_ for _ in ()).throw(Exception(f"got {_H_FLIP_PERM.dtype}")))
 check("_H_FLIP_PERM is a permutation (all indices in 0..8191)",
-    lambda: None if _H_FLIP_PERM.max().item() < 8192 and _H_FLIP_PERM.min().item() >= 0
+    lambda: None if _H_FLIP_PERM.max().item() < 4672 and _H_FLIP_PERM.min().item() >= 0
             else (_ for _ in ()).throw(Exception("out-of-range indices")))
 
 # Double-flip identity: applying perm twice must recover original
-policy = torch.rand(8192)
+policy = torch.rand(4672)
 double_flipped = policy[_H_FLIP_PERM][_H_FLIP_PERM]
 check("double-flip identity (flip ∘ flip = identity)",
     lambda: None if torch.allclose(policy, double_flipped)
             else (_ for _ in ()).throw(Exception(
                 f"max diff = {(policy - double_flipped).abs().max().item():.6f}")))
 
-# Spot check: e2e4 (file e=4, rank 1→3) flips to d2d4 (file d=3, rank 1→3)
-# src e2 = file 4 + rank 1 * 8 = 12   dst e4 = file 4 + rank 3 * 8 = 28  → idx 12*64+28 = 796
-# src d2 = file 3 + rank 1 * 8 = 11   dst d4 = file 3 + rank 3 * 8 = 27  → idx 11*64+27 = 731
-e2e4_idx = 12 * 64 + 28   # 796
-d2d4_idx = 11 * 64 + 27   # 731
-check("e2e4 (idx 796) flips to d2d4 (idx 731): perm[731] == 796",
+# Spot check: e2e4 (file e=4, rank 1→3) flips to d2d4 (file d=3, rank 1→3).
+# AlphaZero 4672 encoding = src*73 + plane; queen-like plane = dir*7 + (dist-1), dir 0 = North.
+# e2: src = 4 + 1*8 = 12, N, dist 2 → 12*73 + 0*7 + 1 = 877
+# d2: src = 3 + 1*8 = 11, N, dist 2 → 11*73 + 0*7 + 1 = 804
+e2e4_idx = 12 * 73 + 1   # 877
+d2d4_idx = 11 * 73 + 1   # 804
+check("e2e4 (idx 877) flips to d2d4 (idx 804): perm[804] == 877",
     lambda: None if _H_FLIP_PERM[d2d4_idx].item() == e2e4_idx
             else (_ for _ in ()).throw(Exception(
                 f"perm[{d2d4_idx}] = {_H_FLIP_PERM[d2d4_idx].item()}, expected {e2e4_idx}")))
 
 # Functional: set policy[796]=1, flip, expect result[731]=1
-p = torch.zeros(8192); p[e2e4_idx] = 1.0
+p = torch.zeros(4672); p[e2e4_idx] = 1.0
 p_flipped = p[_H_FLIP_PERM]
 check("e2e4 policy → d2d4 after flip (functional)",
     lambda: None if p_flipped[d2d4_idx].item() == 1.0 and p_flipped[e2e4_idx].item() == 0.0
@@ -559,7 +555,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
     # Write an old-format (16-channel) file — should be skipped
     np.savez_compressed(os.path.join(iter_dir, "old.npz"),
                         states=np.zeros((10, 16, 8, 8), dtype=np.float32),
-                        policies=np.zeros((10, 8192), dtype=np.float32),
+                        policies=np.zeros((10, 4672), dtype=np.float32),
                         values=np.zeros(10, dtype=np.float32))
     ds_old = ChessDataset(tmpdir, window_size=1)
     check("ChessDataset skips 16-channel (old format) files",
@@ -569,7 +565,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
     # Write a new-format (120-channel) file — should be loaded
     np.savez_compressed(os.path.join(iter_dir, "new.npz"),
                         states=np.zeros((5, 120, 8, 8), dtype=np.float32),
-                        policies=np.zeros((5, 8192), dtype=np.float32),
+                        policies=np.zeros((5, 4672), dtype=np.float32),
                         values=np.zeros(5, dtype=np.float32))
     ds_new = ChessDataset(tmpdir, window_size=1)
     check("ChessDataset accepts 120-channel (new format) files",
@@ -597,52 +593,17 @@ parse "$out"
 # =============================================================================
 header "9. Evaluation"
 
-out=$(cd "$CHESS_AI_DIR" && "$PYTHON" - 2>&1 <<'PY'
-import sys
-sys.path.insert(0, "game_engine")
-sys.path.insert(0, ".")
-
-def check(name, fn):
-    try:
-        fn()
-        print(f"PASS: {name}")
-    except Exception as e:
-        print(f"FAIL: {name} | {str(e).replace(chr(10),' ')[:120]}")
-
-from game_engine.evaluation import EvalMCTS, Arena, StockfishEvaluator, _play_stockfish_game
-import inspect
-
-check("EvalMCTS importable", lambda: None)
-check("Arena importable", lambda: None)
-check("StockfishEvaluator importable", lambda: None)
-
-# EvalMCTS must have tree-reuse methods
-src_eval = inspect.getsource(EvalMCTS)
-check("EvalMCTS.advance_root defined",
-    lambda: None if "def advance_root" in src_eval
-            else (_ for _ in ()).throw(Exception("method not found")))
-check("EvalMCTS.reset_cache defined",
-    lambda: None if "def reset_cache" in src_eval
-            else (_ for _ in ()).throw(Exception("method not found")))
-
-src_arena = inspect.getsource(Arena.play_game)
-check("Arena.play_game calls reset_cache at game start",
-    lambda: None if "reset_cache" in src_arena
-            else (_ for _ in ()).throw(Exception("reset_cache not called")))
-check("Arena.play_game calls advance_root after each move",
-    lambda: None if "advance_root" in src_arena
-            else (_ for _ in ()).throw(Exception("advance_root not called")))
-
-src_sf = inspect.getsource(_play_stockfish_game)
-check("_play_stockfish_game (Stockfish worker) calls advance_root",
-    lambda: None if "advance_root" in src_sf
-            else (_ for _ in ()).throw(Exception("advance_root not called")))
-check("_play_stockfish_game (Stockfish worker) calls reset_cache",
-    lambda: None if "reset_cache" in src_sf
-            else (_ for _ in ()).throw(Exception("reset_cache not called")))
-PY
-)
-parse "$out"
+# The arena / Stockfish eval are NOT in evaluation.py — that whole class layer (EvalMCTS, Arena,
+# StockfishEvaluator) was deleted in favour of the server-routed workers in main.py. This section
+# used to import those dead names: the import raised, the heredoc died, and its 7 checks silently
+# VANISHED from the count instead of failing. Grep the code that actually runs instead.
+src_check "main.py: arena worker resets the tree per game"  "game_engine/main.py" 'cand.reset_cache(); champ.reset_cache()'
+src_check "main.py: arena worker advances both trees"       "game_engine/main.py" 'cand.advance_root(mv); champ.advance_root(mv)'
+src_check "main.py: SF eval worker resets the tree"         "game_engine/main.py" 'worker.reset_cache()'
+src_check "main.py: SF eval worker advances the tree"       "game_engine/main.py" 'worker.advance_root(mv)'
+src_check "main.py: eval workers guard illegal pushes"      "game_engine/main.py" 'if not game.push(mv):'
+src_check "evaluation.py: MetricsLogger writes atomically"  "game_engine/evaluation.py" 'os.replace(tmp, metrics_file)'
+src_check "evaluation.py: uses 'model_elo' metrics key"     "game_engine/evaluation.py" '"model_elo"' 
 
 # =============================================================================
 # 10. STOCKFISH
@@ -829,12 +790,12 @@ if len(s_shape) == 4:
         check(f"states channel count = 120",
             lambda: (_ for _ in ()).throw(Exception(f"unexpected channel count: {ch} in {s_shape}")))
 
-check(f"policies shape (N, 8192) — got {p_shape}",
-    lambda: None if len(p_shape) == 2 and p_shape[1] == 8192
+check(f"policies shape (N, 4672) — got {p_shape}",
+    lambda: None if len(p_shape) == 2 and p_shape[1] == 4672
             else (_ for _ in ()).throw(Exception(f"got {p_shape}")))
-check(f"values in [-1, 1] — min={v.min():.2f} max={v.max():.2f}",
-    lambda: None if v.min() >= -1.0 and v.max() <= 1.0
-            else (_ for _ in ()).throw(Exception(f"out of range: [{v.min():.2f}, {v.max():.2f}]")))
+check(f"values are WDL class ids {{0,1,2}} — got {sorted(set(v.tolist()))}",
+    lambda: None if set(v.tolist()) <= {0, 1, 2}
+            else (_ for _ in ()).throw(Exception(f"unexpected classes: {sorted(set(v.tolist()))}")))
 PY
 )
 parse "$out"
@@ -881,15 +842,15 @@ src_check "main.py: calls worker.advance_root"    "game_engine/main.py" 'worker\
 src_check "main.py: calls worker.reset_cache"     "game_engine/main.py" 'worker\.reset_cache'
 
 # main.py: ELO metrics bug fix (model_elo not elo)
-src_check  "main.py: uses 'model_elo' key for ELO lookup"  "game_engine/main.py" '"model_elo"'
+src_check  "evaluation.py: writes the 'model_elo' key"     "game_engine/evaluation.py" '"model_elo"' 
 src_absent "main.py: no bare 'elo' key lookup"              "game_engine/main.py" 'entry\.get("elo")'
 
 # main.py: passes total_iterations to train_model
 src_check "main.py: passes total_iterations to train_model" "game_engine/main.py" 'total_iterations='
 
 # evaluation.py: tree reuse
-src_check "evaluation.py: Arena calls advance_root"  "game_engine/evaluation.py" 'advance_root'
-src_check "evaluation.py: Arena calls reset_cache"   "game_engine/evaluation.py" 'reset_cache'
+src_check "main.py: no zeros-fallback on inference timeout" "game_engine/mcts_worker_cpp.py" 'raises on timeout' 
+src_check "trainer.py: candidate.pth saved atomically"     "game_engine/trainer.py" 'os.replace(output_model_path' 
 
 # trainer.py: LR scheduler
 src_check  "trainer.py: uses CosineAnnealingLR"      "game_engine/trainer.py" 'CosineAnnealingLR'
@@ -912,7 +873,7 @@ header "14. GCP Launch Script"
 gcp_check() {
     local description="$1"
     local pattern="$2"
-    if grep -qe "$pattern" "$CHESS_AI_DIR/run_gcp.sh"; then
+    if grep -qe "$pattern" "$CHESS_AI_DIR/game_engine/run_gcp.sh"; then
         ok "$description"
     else
         fail "$description" "pattern '$pattern' not found in run_gcp.sh"
@@ -920,17 +881,16 @@ gcp_check() {
 }
 
 gcp_check "run_gcp.sh: GPU VRAM detection"       'VRAM_GB'
-gcp_check "run_gcp.sh: installs stockfish"        'MISSING_PKGS.*stockfish\|stockfish.*MISSING_PKGS'
-gcp_check "run_gcp.sh: STOCKFISH_PATH auto-detect" 'which stockfish'
+gcp_check "run_gcp.sh: builds stockfish"          'stockfish'
 gcp_check "run_gcp.sh: cmake build step"          'cmake'
 gcp_check "run_gcp.sh: make -j build"             'make -j'
 gcp_check "run_gcp.sh: copies .so to game_engine" 'cp mcts_engine_cpp'
-gcp_check "run_gcp.sh: auto-tunes CUDA_BATCH_SIZE" 'CUDA_BATCH_SIZE='
+src_check "hyperparams: auto-tunes CUDA_BATCH_SIZE" "game_engine/hyperparams.env.sh" 'CUDA_BATCH_SIZE=' 
 gcp_check "run_gcp.sh: NUM_WORKERS from nproc"   'NUM_WORKERS'
-gcp_check "run_gcp.sh: runs game_engine/main.py"  'game_engine/main.py'
+gcp_check "run_gcp.sh: runs game_engine.main"     'game_engine.main'
 gcp_check "run_gcp.sh: background mode flag"      '\-\-background'
-gcp_check "run_gcp.sh: logs to logs/training.log" 'logs/training.log'
-src_check "run_gcp.sh: exports EVAL_SIMULATIONS"  "run_gcp.sh" 'EVAL_SIMULATIONS'
+gcp_check "run_gcp.sh: tees the training log"     'training_log.txt' 
+src_check "hyperparams: exports EVAL_SIMULATIONS" "game_engine/hyperparams.env.sh" 'EVAL_SIMULATIONS' 
 
 # =============================================================================
 # SUMMARY

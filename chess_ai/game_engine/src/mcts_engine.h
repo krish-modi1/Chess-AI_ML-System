@@ -127,6 +127,11 @@ public:
     // Post-search backed-up ROOT value (STM-relative, [-1,1]) — the MCTS Q averaged over all sims,
     // a much lower-variance value estimate than the raw net. Read by self-play for the TD (z+Q) target.
     float last_search_value = 0.0f;
+    // Batch-collision diagnostic (cumulative across searches). leaves_unique/leaves_total is the
+    // fraction of selections that reached DISTINCT leaves — i.e. the fraction of `simulations` that
+    // bought a real evaluation. Virtual loss exists to keep this near 1.0.
+    long long leaves_total = 0;
+    long long leaves_unique = 0;
 
     MCTSEngine(int sims = 800, int bs = 8) : simulations(sims), batch_size(bs) {}
 

@@ -135,12 +135,9 @@ void MCTSEngine::backpropagate(const std::vector<std::shared_ptr<MCTSNode>>& pat
                                float value, float leaf_turn_player) {
     for (auto& node : path) {
         // Undo the virtual loss added to EVERY node on this path during selection
-        // (see the selection loop). Removing it leaf-only — as the previous code did —
-        // left intermediate nodes permanently penalized within a batch, so all
-        // batch_size (e.g. 320) selections funneled down nearly the same path instead
-        // of diversifying. Whole-path add/remove is the standard leaf-parallel scheme.
+        // (see the selection loop). Whole-path add/remove is the standard leaf-parallel scheme.
         node->virtual_loss -= VIRTUAL_LOSS;
-        node->value_sum    += VIRTUAL_LOSS;
+        node->value_sum    -= VIRTUAL_LOSS;
 
         node->visit_count += 1;
         float turn_val = node->board.turn_player();   // pure C++ — no GIL crossing
@@ -434,7 +431,7 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::run_gumbel(
                 need[t]--; total_need--; scheduled++;
 
                 auto path = descend(live[t]);
-                for (auto& nd : path) { nd->virtual_loss += VIRTUAL_LOSS; nd->value_sum -= VIRTUAL_LOSS; }
+                for (auto& nd : path) { nd->virtual_loss += VIRTUAL_LOSS; nd->value_sum += VIRTUAL_LOSS; }
                 auto leaf = path.back();
                 if (leaf->board.is_over()) {
                     float tp = leaf->board.turn_player();
@@ -591,12 +588,18 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::search(
                 }
             }
 
-            // Apply virtual loss to EVERY node on the path (not just the leaf) so the
-            // next selection in this batch is steered away from the whole explored path,
-            // not only its tip. Removed again in backpropagate().
+            // Apply virtual loss to EVERY node on the path (not just the leaf) so the next
+            // selection in this batch is steered away from the whole explored path, not only its
+            // tip. Removed again in backpropagate().
+            //
+            // SIGN: value_sum is in the node's OWN side-to-move frame and the parent scores a child
+            // as q = -child->value(), so a node must be made to look GOOD FOR ITSELF to look BAD to
+            // the parent that is choosing it. Hence `+= VIRTUAL_LOSS`. Subtracting (the pre-iter-109
+            // code) drove a fresh in-flight leaf to value() = -1 → q = +1 at its parent, i.e.
+            // maximally ATTRACTIVE, so every selection in a batch funnelled onto the same leaf.
             for (auto& n : path) {
                 n->virtual_loss += VIRTUAL_LOSS;
-                n->value_sum    -= VIRTUAL_LOSS;
+                n->value_sum    += VIRTUAL_LOSS;
             }
 
             if (node->board.is_over()) {                       // pure C++ — no GIL crossing
@@ -610,6 +613,18 @@ std::pair<std::string, py::array_t<float>> MCTSEngine::search(
                 // Copy is intentional — callback must not mutate MCTS tree nodes.
                 leaf_states.push_back(py::cast(node->board));
             }
+        }
+
+        // How many of this batch's selections reached DISTINCT leaves. Healthy virtual loss keeps
+        // this near batch_size; a funnel collapses it toward 1, so `simulations` overstates the
+        // real search by leaves_total/leaves_unique.
+        {
+            std::vector<MCTSNode*> uniq;
+            uniq.reserve(leaves.size());
+            for (auto& l : leaves) uniq.push_back(l.get());
+            std::sort(uniq.begin(), uniq.end());
+            leaves_total  += (long long)leaves.size();
+            leaves_unique += (long long)(std::unique(uniq.begin(), uniq.end()) - uniq.begin());
         }
 
         if (leaves.empty()) continue;

@@ -90,7 +90,7 @@ C = {
     "grad": "#64748b",     # slate-600
     "champ": "#f97316",    # orange
     "cand": "#6366f1",     # indigo
-    "marker": "#6b7280",   # gray — intervention markers
+    "marker": "#6b7280",   # gray
 }
 
 # ----------------------------------------------------------------------------
@@ -100,26 +100,6 @@ C = {
 #   label  = short caption drawn at the vertical line
 #   panels = "all" (every iteration-x-axis panel) or a set of panel keys
 #            ("elo","loss","acc","winrate","kl","search","value","grad")
-# Add a line here whenever a lever is pulled.
-# ----------------------------------------------------------------------------
-INTERVENTIONS = [
-    {"iter": 17, "label": "LR 1e-4→3e-4", "panels": "all"},
-    # Reference reset: KL anchor pretrained-1800 → live champion. Set "iter" to the FIRST iteration
-    # whose training log shows "KL anchor = CHAMPION" (adjust if it ships at a different iter than 22).
-    {"iter": 22, "label": "anchor→champion", "panels": {"kl", "elo", "winrate", "loss"}},
-    # Value-head architecture fix: 1-ch bottleneck → KataGo global avg+max pool WDL head (migrated via
-    # grow_value_head.py). Negative result — value stayed flat. Mark the value/loss panels.
-    {"iter": 85, "label": "value-head GP", "panels": {"value", "loss", "elo"}},
-    # TD (z+Q) value target λ=0.3 + moves-left aux head go live. Phases in over ~window_size iters.
-    {"iter": 87, "label": "TD λ=0.3 + aux", "panels": {"value", "loss"}},
-    # Promotion gate 0.55 → 0.50 (unfreeze the self-play generator). Keep in sync with GATE_HISTORY.
-    {"iter": 89, "label": "gate 0.55→0.50", "panels": {"winrate", "elo"}},
-    # Lineage OFF (stop the monotonic drift) + train window 20→40. Fresh retrain from champion each iter.
-    {"iter": 91, "label": "lineage off + win40", "panels": {"winrate", "elo", "loss", "value"}},
-    # Stockfish-anchored gate replaces the arena (arena WR now diagnostic-only); training knobs reverted.
-    # Champion re-promoted from the it56 freeze. Arena↔promotion decouple here (green dots may sit low).
-    {"iter": 92, "label": "SF gate + promote", "panels": {"winrate", "elo"}},
-]
 
 
 def setup_style():
@@ -219,29 +199,8 @@ def parse(history):
     }
 
 
-def _mark_interventions(ax, key):
-    """Draw a vertical dashed line + rotated caption at each registered intervention
-    that targets this panel (panels=="all" or key in panels). Label rides the top of
-    the axes via the xaxis transform so it never collides with the data."""
-    for iv in INTERVENTIONS:
-        panels = iv.get("panels", "all")
-        if panels != "all" and key not in panels:
-            continue
-        x = iv["iter"]
-        ax.axvline(x, color=C["marker"], ls=(0, (4, 3)), lw=1.2, alpha=0.7, zorder=1.5)
-        # Put the label on whichever side of the line has more room (left of the line when it sits in
-        # the right third of the x-range, else right), and give it an opaque white box so it reads as
-        # a clean tag over data/gridlines/annotations instead of tangling with them.
-        xmin, xmax = ax.get_xlim()
-        on_right = x > xmin + 0.6 * (xmax - xmin)
-        ax.text(x, 0.985, iv["label"], transform=ax.get_xaxis_transform(),
-                rotation=90, va="top", ha=("right" if on_right else "left"),
-                fontsize=6, color=C["marker"], zorder=7,
-                bbox=dict(boxstyle="round,pad=0.22", fc="white", ec=C["marker"],
-                          lw=0.5, alpha=0.9))
 
-
-def _int_xaxis(ax, it, mark=None):
+def _int_xaxis(ax, it):
     # Adaptive tick base: every-5 labels in the normal 10–60-iter range, every iteration
     # for short fresh-restart runs (a <5-iter run otherwise shows ONLY the '0' label),
     # scaled up in steps of 5 for long runs so labels never crowd (span 300 → base 25).
@@ -251,9 +210,6 @@ def _int_xaxis(ax, it, mark=None):
     if base > 1:
         ax.xaxis.set_minor_locator(MultipleLocator(max(1, base // 5)))
     ax.set_xlabel("Iteration")
-    # Intervention marker lines disabled — they were overlapping/covering the data. The registry
-    # (INTERVENTIONS) + _mark_interventions() are kept dormant; re-enable by restoring this call.
-    _ = mark
 
 
 def _legend_below(ax, ax2=None, ncol=2):
@@ -320,7 +276,7 @@ def panel_elo(ax, H):
                 bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="#e2e8f0", lw=0.8))
     ax.set_title("Elo Progression")
     ax.set_ylabel("Elo")
-    _int_xaxis(ax, it, "elo")
+    _int_xaxis(ax, it)
     _legend_below(ax, ncol=4)
 
 
@@ -340,7 +296,7 @@ def panel_loss(ax, H, which):
         ax.fill_between(it[both], tr[both], va[both], color=c, alpha=0.10)
     ax.set_title(f"{name} Loss (train vs val)")
     ax.set_ylabel("Loss")
-    _int_xaxis(ax, it, "loss")
+    _int_xaxis(ax, it)
     _legend_below(ax, ncol=2)
 
 
@@ -353,7 +309,7 @@ def panel_acc(ax, H):
             ms=4, label="Val acc")
     ax.set_title("Policy Top-1 Accuracy")
     ax.set_ylabel("Accuracy (%)")
-    _int_xaxis(ax, it, "acc")
+    _int_xaxis(ax, it)
     _legend_below(ax, ncol=2)
 
 
@@ -365,7 +321,7 @@ def panel_kl(ax, H):
     ax.set_title("KL-to-Reference  (anchor, β=1.0)")
     ax.set_ylabel("KL (nats)")
     ax.set_ylim(bottom=0)
-    _int_xaxis(ax, it, "kl")
+    _int_xaxis(ax, it)
     _legend_below(ax, ncol=1)
 
 
@@ -377,7 +333,7 @@ def panel_search(ax, H):
             label="MCTS override (%)")
     ax.set_title("Search vs Net (policy improvement)")
     ax.set_ylabel("%")
-    _int_xaxis(ax, it, "search")
+    _int_xaxis(ax, it)
     # KL(MCTS‖net) on a twin axis — different scale (nats).
     ax2 = ax.twinx()
     ax2.grid(False)
@@ -396,7 +352,7 @@ def panel_value_calib(ax, H):
             label="Value acc — champion (%)")
     ax.set_title("Value Head Calibration")
     ax.set_ylabel("Accuracy (%)")
-    _int_xaxis(ax, it, "value")
+    _int_xaxis(ax, it)
     ax2 = ax.twinx()
     ax2.grid(False)
     ax2.plot(it, H["dec_cand"], color=C["value"], lw=1.6, ls=":", marker="d", ms=3.5,
@@ -414,7 +370,7 @@ def panel_grad(ax, H):
     ax.set_title("Gradient Norm (stability)")
     ax.set_ylabel("‖grad‖")
     ax.set_ylim(bottom=0)
-    _int_xaxis(ax, it, "grad")
+    _int_xaxis(ax, it)
     _legend_below(ax, ncol=1)
 
 
@@ -482,7 +438,7 @@ def main():
     # Stockfish-anchored gate replaced the arena.)
     save_panel("elo_rating.png", panel_elo, H)
     save_panel("policy_loss.png", lambda ax, h: panel_loss(ax, h, "policy"), H)
-    save_panel("validation_loss.png", lambda ax, h: panel_loss(ax, h, "value"), H)
+    save_panel("value_loss.png", lambda ax, h: panel_loss(ax, h, "value"), H)
     save_panel("accuracy.png", panel_acc, H)
     save_panel("kl_anchor.png", panel_kl, H)
     save_panel("search_improvement.png", panel_search, H)
