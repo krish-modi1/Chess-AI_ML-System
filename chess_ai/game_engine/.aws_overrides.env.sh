@@ -55,7 +55,7 @@ export SELFPLAY_TEMPERATURE=1.0
 # at 0.5 the on-distribution HALF then held diversity on its own (g1f3 24%, not 96% — iter-42), proving
 # sampling now carries it. So the book is no longer the sole source → drop to 0.05. WATCH
 # check_diversity.py on the next iter; raise back if the net's sampled openings narrow. [[opening-book-diversity]]
-export OPENING_BOOK_PROB=0.1
+export OPENING_BOOK_PROB=0.3
 
 # Worker pacing: cap a fast worker to ≤3 games ahead of the slowest (was 5) — tighter spread so
 # fewer workers finish all 10 and idle while stragglers catch up = less tail-idle at iter end.
@@ -112,17 +112,23 @@ export TRAIN_EPOCHS=1
 # arena can't tell them apart); the SF gate reads the real improvement, so lineage-off is safe now.
 export TRAIN_FROM_LINEAGE=0
 
-# SELF-PLAY TEACHER STRENGTH (iter-100): the SIMS_DIAGNOSTIC self-match proved depth MATTERS — champion
-# @4000 sims beat the same champion @2000 by 65.7% ± 7.6% (~+113 Elo). So the 2000-sim recorded targets
-# were an UNDER-POWERED teacher — candidates plateaued at parity because they were matching a champion
-# playing at only 2000-sim strength. (The old "target quality is not the wall" verdict at it77-79 was
-# reached under the BROKEN arena gate → suspect, and now directly contradicted by this clean self-match.)
-# Fix = DEEPEN the recorded target (2000→4000) while HALVING its frequency (0.5→0.25) so average self-play
-# compute stays ~flat: 0.25·4000 + 0.75·200 ≈ 1150 vs old 0.5·2000 + 0.5·200 ≈ 1100 sims/move. Quality-
-# over-quantity, KataGo-PCR style. WATCH: recorded targets/game also HALVE (25% of moves vs 50%), so the
-# training window holds ~half the positions — if the "Window: N pos" line drops too low, widen TRAIN_WINDOW.
-export SIMULATIONS=4000
-export FULL_SEARCH_PROB=0.25
+# SELF-PLAY TEACHER (iter-106). History: SIMS_DIAGNOSTIC (champ @4000 vs same champ @2000, 150 games)
+# = 65.7% ± 7.6% (~+113 Elo) → depth MATTERS, the 2000-sim teacher was under-powered. (That also kills the
+# it77-79 "target quality is not the wall" verdict, which was reached under the BROKEN arena gate.)
+# iter-100 tried 4000 sims @ 0.25 prob to buy depth at flat compute — but 0.25 BACKFIRED on two fronts:
+#   1) DATA COLLAPSE: recorded targets/game halved → window fell 1.97M→1.56M pos (heading ~1.0M) and the
+#      candidate UNDERFIT (train AND val loss both rose in lockstep, acc fell) → stuck at parity.
+#   2) DIVERSITY COLLAPSE: `use_dirichlet=is_full` (main.py) ties root noise to FULL moves ONLY, so 0.25
+#      cut exploration noise to 25% of moves → self-play opened g1f3 87.9% of the time (e4/d4/c4 ~0.3%
+#      each, measured over 4000 games). Peaked root policy → narrow data → more peaked. Feedback loop.
+# FIX: prioritise DIVERSITY + DATA over raw depth — they are the binding constraints (a deeper teacher
+# searching the same g1f3 monoculture doesn't help). 2400 sims @ 0.6 prob:
+#   cost 0.6·2400 + 0.4·200 = 1520 sims/move (1.38× the old 1100) — cheaper than 4000@0.5 (2100).
+#   Dirichlet + recorded coverage 25% → 60% (better than the original 50% on both).
+#   Depth 2000→2400 keeps a modest teacher gain (~+30 Elo by log-sims scaling; full +113 needs 4000).
+# Revisit depth (→3000/4000) once diversity + window positions recover.
+export SIMULATIONS=2400
+export FULL_SEARCH_PROB=0.6
 
 # Eval sizing — BOTH arena and Stockfish at 100 workers × 4 games = 400 games each. 4/worker alternates
 #   W,B,W,B = 2 White + 2 Black, color-balanced. 400 games → 95% CI ±4.9% (vs ±5.7% at 300): with the
