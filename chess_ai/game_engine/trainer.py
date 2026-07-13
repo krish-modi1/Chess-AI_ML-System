@@ -179,12 +179,14 @@ def scan_window_files(data_dir, window_size=20):
     if not os.path.exists(data_dir):
         print(f"Warning: No data found in {data_dir}")
         return []
+    # Filter to strictly numeric iter_N names, don't try/except the sort: a single stray dir
+    # (iter_42.bak, iter_backup) used to raise ValueError inside the sort key and the blanket
+    # `except` then emptied the ENTIRE window → "No iteration data folders found" → training
+    # silently skipped while the loop kept running.
     subdirs = [d for d in os.listdir(data_dir)
-               if os.path.isdir(os.path.join(data_dir, d)) and d.startswith("iter_")]
-    try:
-        sorted_subdirs = sorted(subdirs, key=lambda x: int(x.split("_")[1]))
-    except ValueError:
-        sorted_subdirs = []
+               if os.path.isdir(os.path.join(data_dir, d))
+               and d.startswith("iter_") and d.split("_", 1)[1].isdigit()]
+    sorted_subdirs = sorted(subdirs, key=lambda x: int(x.split("_")[1]))
     # Drop iterations older than TRAIN_MIN_ITER (e.g. pre-1200-sim 800-sim data). 0 = keep all.
     _min_iter = int(os.environ.get("TRAIN_MIN_ITER", 0))
     if _min_iter > 0:
@@ -221,7 +223,8 @@ def scan_window_files(data_dir, window_size=20):
 
 
 class ChessDataset(Dataset):
-    def __init__(self, data_dir, window_size=20, max_positions=None, file_plan=None, quiet=False):
+    def __init__(self, data_dir, window_size=20, max_positions=None, file_plan=None, quiet=False,
+                 augment=True):
         # Two load modes:
         #  • file_plan=None (default): scan the last `window_size` iters newest-first and cap at
         #    max_positions (MAX_TRAIN_POSITIONS — a RAM ceiling, ~24.7 KB/position in f16). Used
@@ -231,6 +234,10 @@ class ChessDataset(Dataset):
         self.total_positions = 0
         self.num_games = 0
         self._game_ids = np.empty(0, dtype=np.int32)
+        # Random h-flip is a train-time augmentation. On the VAL set it made every val pass
+        # nondeterministic, so Va-P/Va-V jittered in the 3rd decimal — the exact digits used to
+        # call overfit vs underfit across iterations. Val must be a fixed, comparable measurement.
+        self.augment = augment
 
         if file_plan is None:
             if max_positions is None:
@@ -369,7 +376,7 @@ class ChessDataset(Dataset):
             plies    = self._plies[idx]
             reply    = int(self._reply[idx])
 
-        if torch.rand(1).item() < 0.5:
+        if self.augment and torch.rand(1).item() < 0.5:
             # Horizontal (file a<->h) mirror is a valid chess symmetry EXCEPT it swaps
             # kingside<->queenside, so the castling-rights planes (112=WK,113=WQ,114=BK,
             # 115=BQ) must be swapped to match the mirrored geometry. Without this, every
@@ -478,7 +485,7 @@ def train_model(data_path="data/self_play",
 
     # Val set loaded once, persists across all epochs. Single-chunk: load the train data once and
     # reuse it every epoch (no reload). Multi-chunk: train loaders are built per chunk in the loop.
-    val_dataset = ChessDataset(data_path, file_plan=val_plan)
+    val_dataset = ChessDataset(data_path, file_plan=val_plan, augment=False)
     val_dataloader = _mk_loader(val_dataset, shuffle=False, persistent=True) if len(val_dataset) > 0 else None
     train_dataset = train_dataloader = None
     if not multi_chunk:
@@ -854,7 +861,8 @@ def train_model(data_path="data/self_play",
         last_p_loss = tr_p_avg
         last_v_loss = tr_v_avg
 
-    # 5. Save Model
+    # 5. Save Model — atomic (tmp + os.replace): the documented stop is `kill -TERM`, and a TERM
+    # landing inside a ~1 GB torch.save used to leave a truncated candidate.pth.
     os.makedirs(os.path.dirname(output_model_path), exist_ok=True)
     torch.save({
         'model_state_dict': model.state_dict(),
@@ -863,7 +871,8 @@ def train_model(data_path="data/self_play",
         'epoch': epoch + 1,
         'val_policy_loss': va_p_avg,
         'val_value_loss': va_v_avg,
-    }, output_model_path)
+    }, output_model_path + ".tmp")
+    os.replace(output_model_path + ".tmp", output_model_path)
     print(f"New model saved to {output_model_path}")
 
     # Free the in-RAM dataset (up to ~100 GB at the 20-iter window) and the model/optimizer

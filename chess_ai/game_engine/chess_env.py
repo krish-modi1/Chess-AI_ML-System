@@ -46,13 +46,20 @@ class ChessGame:
     def turn_player(self):
         return 1.0 if self.board.turn == chess.WHITE else 0.0
 
+    # claim_draw=True → threefold repetition and the 50-move rule END the game, matching BOTH the
+    # C++ search tree (chess.hpp isGameOver()) and AlphaZero's actual rules. python-chess defaults to
+    # claim_draw=False, i.e. FIVEFOLD / 75-move — so the search scored a line as a terminal draw while
+    # the real game played on for up to 25 more moves and could end differently. That put the z labels
+    # and the in-tree draw values systematically at odds in long endgames: exactly the phase this
+    # champion is documented as losing. (Cost: is_game_over(claim_draw=True) runs a move generation,
+    # but this is the Python game loop, not the hot C++ search path.)
     @property
     def is_over(self):
-        return self.board.is_game_over()
+        return self.board.is_game_over(claim_draw=True)
 
     @property
     def result(self):
-        return self.board.result()
+        return self.board.result(claim_draw=True)
 
     def legal_moves(self):
         if self._cache_legal is None:

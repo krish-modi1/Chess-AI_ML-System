@@ -2,7 +2,7 @@ import torch
 import torch.multiprocessing as mp
 import time
 import os
-import numpy as np
+import threading
 import concurrent.futures
 import queue
 
@@ -33,6 +33,10 @@ class InferenceServer:
 
     def process_batch(self, batch_data, stream_idx, model, device):
         if not batch_data: return
+        with self.stage_locks[stream_idx]:
+            self._process_batch_locked(batch_data, stream_idx, model, device)
+
+    def _process_batch_locked(self, batch_data, stream_idx, model, device):
         stream = self.streams[stream_idx]
 
         # ── Shared-memory path ───────────────────────────────────────────────────
@@ -40,8 +44,8 @@ class InferenceServer:
         # shared input slot into this stream's pinned staging buffer (one contiguous H2D),
         # run the model, then scatter raw logits back into the shared output slots and
         # signal each worker with a tiny (N,) tuple. Each worker_id appears at most once
-        # per in-flight batch (single-outstanding-request invariant), and staging is
-        # per-stream, so concurrent process_batch calls never touch the same memory.
+        # per in-flight batch (single-outstanding-request invariant), and the caller holds
+        # this stream's lock, so no other batch can touch stages[stream_idx] concurrently.
         if self.shm:
             stage = self.stages[stream_idx]
             cursor = 0
@@ -112,9 +116,15 @@ class InferenceServer:
         self.streams = [torch.cuda.Stream() for _ in range(self.num_streams)]
         self.current_stream_idx = 0
 
-        # One pinned staging buffer per stream (so concurrent process_batch calls on
-        # different streams never share a buffer). Sized batch_size + one worker slot to
-        # cover the gather loop's last-item overshoot. Only needed for the SHM path.
+        # One pinned staging buffer per stream, plus a lock per stream. The buffer alone is NOT
+        # enough: stream_idx is assigned round-robin at SUBMIT time but the ThreadPoolExecutor
+        # completes out of order, so batch k+num_streams (same stream) could start writing stages[i]
+        # while batch k's non_blocking H2D *out of that same pinned buffer* was still in flight —
+        # silently corrupted leaf inputs, the same failure class as the 2026-06-19 stream-sync bug.
+        # The lock is held across the whole of process_batch, which ends at stream.synchronize().
+        # ponytail: one lock per stream; if two batches per stream ever need to overlap, use a
+        # CUDA event recorded after the H2D instead.
+        self.stage_locks = [threading.Lock() for _ in range(self.num_streams)]
         if self.shm:
             assert self.shm_inp.is_shared(), "shm_inp not in shared memory — check Process args"
             slot = self.shm_inp.shape[1]
@@ -191,7 +201,15 @@ class InferenceServer:
                 last_successful_batch_time = time.time()
                 batches_since_cache_clear += 1
 
-                # Collect done futures to free batch_data references
+                # Collect done futures to free batch_data references. Re-raise anything a worker
+                # threw: process_batch failures (CUDA OOM, driver hiccup, shm indexing) used to be
+                # swallowed here, so the workers waiting on those replies just hung until the
+                # 1800 s deadlock guard fired, with no line in the log naming the real cause.
+                for f in pending_futures:
+                    if f.done() and f.exception() is not None:
+                        print(f"[InferenceServer] ❌ inference batch failed: {f.exception()!r}",
+                              flush=True)
+                        raise f.exception()
                 pending_futures = [f for f in pending_futures if not f.done()]
 
                 # Periodically free CUDA allocator cache

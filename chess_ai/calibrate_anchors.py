@@ -23,7 +23,12 @@ ap.add_argument("--games", type=int, default=30, help="games per node level (vs 
 ap.add_argument("--nodes", default="2,8,24,64,128,256,512,1024", help="node levels to sweep")
 ap.add_argument("--targets", default="1200,1450,1750", help="target Elos to pick anchors for")
 ap.add_argument("--max-moves", type=int, default=120)
-ap.add_argument("--out", default="chess_ai/anchors.json")
+# NOT anchors.json. This script emits a sweep schema ({"anchors": [{"name": "A1", ...}]}) that
+# round_robin_elo.py cannot read (it wants {"anchors": {"A_low": {"uci_elo": ..., "nodes": ...}}}),
+# and anchors.json is the FROZEN scale pin — every Elo ever rated is relative to it. Defaulting
+# --out there meant one re-run silently destroyed the pin AND broke the ladder. Write the sweep
+# somewhere harmless; transcribe by hand into anchors.json only on a deliberate re-anchor.
+ap.add_argument("--out", default="chess_ai/anchors.sweep.json")
 args = ap.parse_args()
 
 SF = args.stockfish

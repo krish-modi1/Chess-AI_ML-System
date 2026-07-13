@@ -38,9 +38,15 @@ class MetricsLogger:
             try:
                 with open(metrics_file, 'r') as f:
                     metrics = json.load(f)
-                    if not isinstance(metrics, list):
-                        metrics = []
-            except Exception:
+                if not isinstance(metrics, list):
+                    raise ValueError("not a JSON list")
+            except Exception as e:
+                # NEVER silently discard the run history (this used to reset `metrics` to [] and the
+                # write below then overwrote every past iteration with a 1-element file). Preserve the
+                # unreadable file and start a new one, rather than crashing the iteration.
+                os.replace(metrics_file, metrics_file + ".corrupt")
+                print(f"[MetricsLogger] ⚠️ {metrics_file} unreadable ({e}) — "
+                      f"preserved as metrics.json.corrupt, starting a fresh file")
                 metrics = []
 
         # No promotion this iter (elo is None) → champion (best_model) is unchanged, so carry forward
@@ -71,5 +77,8 @@ class MetricsLogger:
 
         metrics.append(data)
 
-        with open(metrics_file, 'w') as f:
+        # Atomic: a crash / kill -TERM mid-write must not leave a truncated metrics.json.
+        tmp = metrics_file + ".tmp"
+        with open(tmp, 'w') as f:
             json.dump(metrics, f, indent=2)
+        os.replace(tmp, metrics_file)

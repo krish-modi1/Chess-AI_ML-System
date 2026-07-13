@@ -308,3 +308,11 @@ chess_ai/data/self_play/run_state.json
 # does NOT preserve across checkout — a committed cache would mismatch every pulled file and just
 # add churn. Each box rebuilds its own on first scan. Keep it local-only.
 chess_ai/data/self_play/*/_scan_cache.json
+
+# GENERATED launcher config — run_aws.sh / run_aws_selfplay.sh rewrite these from their heredocs on
+# EVERY launch, so tracking them guaranteed a dirty work tree on the box and a conflict on the next
+# `git pull` (the tracked copy had drifted to OPENING_BOOK_PROB=0.3 while the heredoc wrote 0.5).
+# The heredoc in the launcher is the single source of truth; these are just its output.
+chess_ai/game_engine/.aws_overrides.env.sh
+chess_ai/game_engine/.aws_selfplay.env.sh
+chess_ai/game_engine/.selfplay_baseline
