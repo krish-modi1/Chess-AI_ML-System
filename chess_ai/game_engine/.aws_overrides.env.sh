@@ -48,14 +48,17 @@ export SERVER_DEADLOCK_TIMEOUT=600
 export TEMP_MOVES=20
 export SELFPLAY_TEMPERATURE=1.0
 
-# Opening mix: 5% of games seed from the forced book, 95% play on-distribution (KataGo/Lc0 target).
-# 0.05 was tried at iter-41 and collapsed to 96% g1f3 — BUT the root cause was a C++ bug, not the value:
-# the played move was argmax(visits) (temperature was inert) and rng reseeded constant every move, so
-# τ=1 never actually sampled. FIXED (mcts_engine.cpp samples the move ∝ visits^(1/T) + per-call reseed);
-# at 0.5 the on-distribution HALF then held diversity on its own (g1f3 24%, not 96% — iter-42), proving
-# sampling now carries it. So the book is no longer the sole source → drop to 0.05. WATCH
-# check_diversity.py on the next iter; raise back if the net's sampled openings narrow. [[opening-book-diversity]]
-export OPENING_BOOK_PROB=0.3
+# Opening mix: fraction of games seeded from the forced 20-opening book; the rest play on-distribution.
+# iter-42 (book=0.5) the on-dist half held diversity alone (g1f3 24%) — that was taken as proof that τ+
+# sampling carries it, so the book was dropped. THAT NO LONGER HOLDS: the net's root policy has since
+# collapsed onto Nf3. MEASURED at iter-105+: g1f3 = 83-88% of all games, e2e4/d2d4 < 0.6% EACH — the
+# engine essentially never plays the mainlines of chess. Raising FULL_SEARCH_PROB 0.25→0.6 (which doubles
+# Dirichlet coverage, since main.py ties `use_dirichlet=is_full`) moved it only 87.9%→83.2% — i.e.
+# Dirichlet PERTURBS a peaked root, it cannot FLATTEN one. The book is the only lever that works.
+# iter-108: 0.3 → 0.5 (aggressive, the value that gave g1f3 24%). Costs zero compute — book plies still
+# get a recorded full-search target. Suspected cause of the value head degrading (val v-loss 0.478→0.504
+# while POLICY improves): self-play confined to one opening family. [[opening-book-diversity]]
+export OPENING_BOOK_PROB=0.5
 
 # Worker pacing: cap a fast worker to ≤3 games ahead of the slowest (was 5) — tighter spread so
 # fewer workers finish all 10 and idle while stragglers catch up = less tail-idle at iter end.
