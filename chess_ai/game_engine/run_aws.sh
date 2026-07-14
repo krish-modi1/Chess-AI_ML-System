@@ -16,7 +16,7 @@ cat > "$OVR" <<'ENV'
 #   OOM over a long run, the per-iteration RAM creep needs a real fix (or a periodic restart).
 #   GPU stays queue-starved (latency-bound, sm~72%) but RAM, not the GPU, is the ceiling on this box.
 #   CUDA_BATCH auto = NUM_WORKERS×8 (< VRAM_CAP 16000, fits 24GB easily). [[selfplay-gpu-bottleneck]]
-export NUM_WORKERS=125
+export NUM_WORKERS=100
 # Reserve 8 of the 96 cores for the GPU-feeding inference server (1 gather + ~6 stream executors).
 # The server feed isn't the bottleneck (gather sits ~14% idle), but keeping it off the worker cores
 # avoids the deadlock-timeout-self-kill failure mode. Workers get the remaining 88.
@@ -141,7 +141,17 @@ export TRAIN_FROM_LINEAGE=0
 #   Dirichlet + recorded coverage 25% → 60% (better than the original 50% on both).
 #   Depth 2000→2400 keeps a modest teacher gain (~+30 Elo by log-sims scaling; full +113 needs 4000).
 # Revisit depth (→3000/4000) once diversity + window positions recover.
-export SIMULATIONS=2400
+# iter-109: 2400 → 1200, forced by RAM. The virtual-loss fix means a search now expands ~SIMULATIONS
+# DISTINCT leaves (was ~26% of them), and expand() materialises a full ChessBoard — carrying the
+# repetition-history stack, which grows with game length — for EVERY legal move. Measured tree cost per
+# search at 60 plies: 600 sims → 69 MB, 1200 → 141 MB, 2400 → 284 MB (≈ linear). At 100 workers and a
+# ~200-ply endgame that overran the 148 GB box. Halving sims halves tree RAM AND halves time per move,
+# so games/hour RISES — strictly better than cutting workers.
+# NOTE this is still a BETTER teacher than anything that produced iters 1-107: 1200 real sims vs the
+# ~636 effective sims that 2400 nominal actually bought under the broken virtual loss.
+# Restore toward 2400+ once expand() stops eagerly building a board for every unvisited child (~29 of
+# every 30 boards it allocates are never visited — a ~10× cut is available there).
+export SIMULATIONS=1200
 export FULL_SEARCH_PROB=0.6
 
 # Eval sizing — BOTH arena and Stockfish at 100 workers × 4 games = 400 games each. 4/worker alternates
@@ -150,10 +160,16 @@ export FULL_SEARCH_PROB=0.6
 #   mirrors EVAL_WORKERS so both evals size together.
 export EVAL_WORKERS=100
 export GAMES_PER_EVAL_WORKER=4
-export STOCKFISH_WORKERS=150
-export STOCKFISH_GAMES=300   # iter-95: champ AND cand both run 300 games = 150 workers × 2 each (W,B —
-                            # color-balanced), SYMMETRICALLY (champ no longer 2×). Consistent, tighter
-                            # BayesElo (±~32 Elo) so the Elo gate resolves near-parity candidates.
+# iter-109: 150 → 100, mirroring the self-play NUM_WORKERS cut. The virtual-loss fix multiplied the
+# nodes each MCTS tree allocates by ~3.8× (a search now expands ~EVAL_SIMULATIONS distinct leaves
+# instead of ~26% of them, and expand() materialises a child board per legal move), which OOM'd the
+# 148 GB no-swap box in self-play. The SF-gate phase runs the SAME trees plus 150 Stockfish processes,
+# so it would OOM next. Colour balance is unaffected: cand_is_white = (game_id % 2 == 0) over
+# game_id ∈ [0, 300), so it's exactly 150 W / 150 B regardless of the per-worker split (now 3 each).
+export STOCKFISH_WORKERS=100
+export STOCKFISH_GAMES=300   # iter-95: champ AND cand both run 300 games, SYMMETRICALLY (champ no
+                            # longer 2×). Consistent, tighter BayesElo (±~32 Elo) so the Elo gate
+                            # resolves near-parity candidates.
 
 # STOCKFISH-ANCHORED GATE (iter-92): replace the self-referential arena gate with a paired Stockfish A/B.
 # The SF-16 A/B proved the arena rejects candidates that are STRONGER vs a neutral opponent (cand 52% /
