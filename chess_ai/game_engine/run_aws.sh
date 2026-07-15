@@ -94,14 +94,14 @@ export TRAIN_DL_PREFETCH=2
 # main.py now uses sharing_strategy='file_descriptor' (no /dev/shm route — that was the iter-43
 # crash), this only bounds peak TRAINING RAM at load (~33GB/chunk), not shm. Trains all data per
 # epoch in 2 load passes. Raise toward 3M for single-chunk speed if RAM headroom is confirmed.
-export TRAIN_CHUNK_POSITIONS=2500000
+export TRAIN_CHUNK_POSITIONS=3000000
 # Train on the last 30 iterations of self-play. Reverted 60→30 (was widened to 45/50/60 at iter-40 to
 # feed the 3rd epoch + fight overfitting) now that the C++ diversity/temperature bug is fixed (iter-41):
 # the wide window kept re-admitting the OLD low-diversity, argmax-temperature (96% g1f3) self-play, which
 # dilutes the post-fix teacher signal. 30 was the proven pre-iter-40 default with a tiny train/val gap,
 # so reverting is overfitting-safe. NOTE: only iters 41+ are post-fix, so 30 still includes ~pre-fix
 # data — narrow further if the goal is purely post-fix data. Now fits ~1 RAM chunk (faster, no chunking).
-export TRAIN_WINDOW=25  # iter-100: 35→25. The 35/epochs-2 combo overfit at iter-99 (Va-V rose
+export TRAIN_WINDOW=35  # iter-100: 35→25. The 35/epochs-2 combo overfit at iter-99 (Va-V rose
                         # 0.477→0.489 while Tr fell), so back off toward the 20 baseline but keep a bit
                         # more data than 20. Near-parity drought persists (it96-98 candidates ~50% vs
                         # SF-2500); the search probe (KL(MCTS‖net)=0.48, Δ=-0.05) says the real lever is
